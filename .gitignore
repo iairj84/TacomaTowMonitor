@@ -1,0 +1,14 @@
+# Tacoma Tow Monitor — local-only secrets, keystores, build outputs
+local.properties
+*.jks
+*.keystore
+/google-services.json
+.build/
+build/
+app/build/
+.gradle/
+.idea/
+*.iml
+.DS_Store
+tow-logs/
+build.log

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Car App Library descriptor. We use the template root only —
+     no navigation, no maps. Host renders List/Pane rows. -->
+<automotiveApp>
+    <uses name="template" />
+</automotiveApp>
