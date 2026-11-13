@@ -1,76 +1,50 @@
 package com.tacomatow.monitor.obd
 
-import android.annotation.SuppressLint
-import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothSocket
-import java.io.InputStream
-import java.io.OutputStream
-import java.util.UUID
-
 /**
- * Minimal blocking ELM327 driver over Bluetooth Classic SPP.
- * Runs on a worker thread owned by [ObdRepository]; never on main.
+ * ELM327 command layer. Transport-agnostic: works over Classic SPP
+ * ([SppTransport]) and BLE GATT ([BleTransport]). Runs on a worker thread;
+ * never on main.
  *
- * Init: ATZ / ATE0 / ATL0 / ATS0 / ATH1 / ATSP0, then per-PID
- * header switching (AT SH 701 for Tacoma trans temps,
- * AT SH 7DF / default for Mode 01).
+ * Init: ATZ / ATE0 / ATL0 / ATS0 / ATH1 / ATSP0, then per-PID header
+ * switching (AT SH 701 for Tacoma trans temps, AT SH 7DF for Mode 01).
  */
 class Elm327Client(
-    private val adapter: BluetoothAdapter,
-    private val device: BluetoothDevice,
+    private val transport: ElmTransport,
 ) {
-    companion object {
-        val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-0085F9B42D9F")
-        private const val PROMPT = '>'
-    }
-
-    private var socket: BluetoothSocket? = null
-    private var input: InputStream? = null
-    private var output: OutputStream? = null
     private var currentHeader: String? = null
+    @Volatile private var open = false
 
-    @SuppressLint("MissingPermission")
     fun connect(timeoutMs: Int = 15_000): Boolean {
-        close()
-        val sock = device.createRfcommSocketToServiceRecord(SPP_UUID)
-        adapter.cancelDiscovery()
-        sock.connect()
-        socket = sock
-        input = sock.inputStream
-        output = sock.outputStream
-        return initAdapter()
-    }
-
-    fun isConnected(): Boolean = socket?.isConnected == true
-
-    private fun initAdapter(): Boolean {
+        if (!transport.open()) return false
+        open = true
         // Order matters: reset, quiet echo/linefeeds, show headers so we can
         // validate ECU addresses, auto protocol for the Tacoma's 11-bit 500k CAN.
         val init = listOf("ATZ", "ATE0", "ATL0", "ATS0", "ATH1", "ATSP0")
         for (cmd in init) {
-            val resp = transact(cmd, 3_000) ?: return false
+            val resp = transport.transact(cmd, 3_000) ?: return false
             if (cmd == "ATZ" && resp.isBlank()) {
                 // Cheap clones sometimes swallow the first reset; one retry.
-                transact(cmd, 3_000) ?: return false
+                transport.transact(cmd, 3_000) ?: return false
             }
         }
         // Warm the protocol on the bus so the first gauge read is fast.
-        transact("0100", 5_000)
+        transport.transact("0100", 5_000)
         return true
     }
 
+    fun isConnected(): Boolean = open
+
     /** Read one PID. Returns decoded value or null (unsupported / timeout). */
     fun readPid(def: PidDef): Float? {
-        if (!isConnected()) return null
+        if (!open) return null
         setHeader(def.header)
-        val raw = transact(TacomaPids.command(def), 2_000) ?: return null
+        val raw = transport.transact(TacomaPids.command(def), 2_000) ?: return null
         val bytes = parseResponse(TacomaPids.command(def), raw) ?: return null
         return TacomaPids.decode(def, bytes)
     }
 
     fun readVoltage(): Float? {
-        val raw = transact("ATRV", 1_500) ?: return null
+        val raw = transport.transact("ATRV", 1_500) ?: return null
         // Clone replies look like "12.6V". Be lenient.
         val m = Regex("""(\d{1,2}\.\d)""").find(raw.replace("V", ""))
         return m?.groupValues?.get(1)?.toFloatOrNull()
@@ -79,63 +53,11 @@ class Elm327Client(
     private fun setHeader(header: String?) {
         if (header == currentHeader) return
         if (header == null) {
-            transact("AT SH 7DF", 1_000)
+            transport.transact("AT SH 7DF", 1_000)
         } else {
-            transact("AT SH $header", 1_000)
+            transport.transact("AT SH $header", 1_000)
         }
         currentHeader = header
-    }
-
-    /** Send a command, block until '>' or timeout. Strips echo. */
-    @Synchronized
-    private fun transact(cmd: String, timeoutMs: Int): String? {
-        val out = output ?: return null
-        val inp = input ?: return null
-        try {
-            // Drain stale bytes so a slow previous reply can't leak in.
-            while (inp.available() > 0) inp.read()
-            out.write((cmd + "\r").toByteArray())
-            out.flush()
-        } catch (_: Exception) {
-            return null
-        }
-        val sb = StringBuilder()
-        val deadline = System.currentTimeMillis() + timeoutMs
-        val buf = ByteArray(256)
-        try {
-            while (System.currentTimeMillis() < deadline) {
-                if (inp.available() > 0) {
-                    val n = inp.read(buf)
-                    if (n > 0) {
-                        for (i in 0 until n) {
-                            val c = buf[i].toInt().toChar()
-                            if (c == PROMPT) {
-                                return clean(sb.toString(), cmd)
-                            }
-                            sb.append(c)
-                        }
-                    }
-                } else {
-                    Thread.sleep(15)
-                }
-                if (sb.contains("NO DATA") || sb.contains("STOPPED") ||
-                    sb.contains("?") || sb.contains("ERROR")
-                ) {
-                    // Let it run to '>' so the stream stays framed, then return.
-                    continue
-                }
-            }
-        } catch (_: Exception) {
-            return null
-        }
-        return null // timeout
-    }
-
-    private fun clean(raw: String, cmd: String): String {
-        // Remove command echo + whitespace; keep NO DATA / error markers.
-        return raw.replace("\r", " ").replace("\n", " ")
-            .replace(cmd, " ").replace(" ", "")
-            .uppercase()
     }
 
     /**
@@ -143,8 +65,9 @@ class Elm327Client(
      * Returns data bytes after the PID echo.
      */
     private fun parseResponse(cmd: String, resp: String): ByteArray? {
-        if (resp.contains("NODATA") || resp.contains("ERROR") ||
-            resp.contains("STOPPED") || resp.contains("?")
+        val r = resp.replace(" ", "")
+        if (r.contains("NODATA") || r.contains("ERROR") ||
+            r.contains("STOPPED") || r.contains("?")
         ) return null
         // Mode 22 echo: "62" + pid(4 hex). Mode 01 echo: "41" + pid(2 hex).
         val echoCandidates = when {
@@ -153,9 +76,9 @@ class Elm327Client(
             else -> emptyList()
         }
         for (echo in echoCandidates) {
-            val idx = resp.indexOf(echo)
+            val idx = r.indexOf(echo)
             if (idx >= 0) {
-                val hex = resp.substring(idx + echo.length)
+                val hex = r.substring(idx + echo.length)
                     .takeWhile { it.isDigit() || it in 'A'..'F' }
                 if (hex.length >= 2) return hexToBytes(hex)
             }
@@ -174,12 +97,8 @@ class Elm327Client(
     }
 
     fun close() {
-        try { input?.close() } catch (_: Exception) {}
-        try { output?.close() } catch (_: Exception) {}
-        try { socket?.close() } catch (_: Exception) {}
-        socket = null
-        input = null
-        output = null
+        open = false
+        try { transport.close() } catch (_: Exception) {}
         currentHeader = null
     }
 }

@@ -8,7 +8,9 @@ ship it by default.
 **What you get**
 - Big tow-first gauges on the phone: **trans pan, converter-out, coolant, oil**
   + RPM / speed, adapter voltage, WARN/CRIT coloring, demo mode.
-- ELM327 over **Bluetooth Classic SPP** (most VGate / OBDII / ELM327 clones).
+- ELM327 over **Bluetooth Classic SPP** (OBDII / ELM327 / VGate-SPP clones)
+  **and Bluetooth LE** (the plug-ins Torque shows as `odbble` — VGate iCar,
+  Veepeak BLE and clones — which have no classic socket at all).
   Auto init (`ATZ E0 L0 S0 H1 SP0`), per-PID header switching.
 - **Tow-trip CSV logging** to app files (`tow-logs/`), one file per trip.
 - **Android Auto head-unit screen** with the same 4 temps as slow-refresh
@@ -45,8 +47,10 @@ Android Studio is at `C:/dev/android-studio`.
    (APK lands in `app/build/outputs/apk/debug/`).
    Fresh clones need a `local.properties` with `sdk.dir` pointing at your
    SDK (e.g. `sdk.dir=C\:/dev`); Android Studio normally writes this for you.
-2. Pair the ELM327 in **system Bluetooth** first (PIN `0000` or `1234`,
+2. Classic dongles: pair in **system Bluetooth** first (PIN `0000` or `1234`,
    names like `OBDII` / `ELM327` / `VGate`), ignition **ON** (engine running best).
+   BLE dongles (`odbble` and friends): **no pairing** — open the app, tap
+   Connect, hit **Scan for BLE adapters**, tap yours when it appears.
 3. `Run ▶` the `app` config on your phone. Tap **Connect ELM327**,
    pick the paired dongle. First sweep takes ~5 s (header flips to `701`).
 4. No adapter handy? Tap **Demo** — simulated tow climb to learn the UI.
@@ -85,8 +89,10 @@ policy and outside this codebase.
 
 ## Troubleshooting
 
-- **Clone won't connect:** kill Torque (it holds the socket), unpair/re-pair,
-  ignition ON. Some $10 clones need `ATSP0` retry — the app already does one.
+- **Clone won't connect:** kill Torque (it holds the connection), ignition ON.
+  Classic: unpair/re-pair in system Bluetooth. BLE (`odbble`): don't pair — scan
+  from inside the app; if the scan finds nothing, the dongle may still be
+  connected to Torque or your radio, so force-close those first.
 - **Trans shows NO DATA but coolant works:** header/ECU mismatch. Confirm the
   dongle answers `AT SH 701` + `221627` in a terminal app; some 4-cyl / manual
   trucks never supported these PIDs.

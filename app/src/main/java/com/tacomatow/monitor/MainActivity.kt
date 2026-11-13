@@ -126,7 +126,7 @@ class MainActivity : ComponentActivity() {
 
         if (showPicker) {
             BluetoothPicker(
-                onPick = { device ->
+                onPick = { device, ble ->
                     showPicker = false
                     val mgr = getSystemService(BluetoothManager::class.java)
                     val adapter: BluetoothAdapter? = mgr?.adapter
@@ -134,9 +134,11 @@ class MainActivity : ComponentActivity() {
                         connectMsg = "No Bluetooth adapter on this phone."
                         return@BluetoothPicker
                     }
-                    ObdHolder.repository.connect(adapter, device) { ok, why ->
+                    val done: (Boolean, String?) -> Unit = { ok, why ->
                         connectMsg = if (ok) null else (why ?: "Connect failed")
                     }
+                    if (ble) ObdHolder.repository.connectBle(this@MainActivity, device, done)
+                    else ObdHolder.repository.connect(adapter, device, done)
                 },
                 onDismiss = { showPicker = false },
             )
@@ -219,28 +221,92 @@ class MainActivity : ComponentActivity() {
 
     @SuppressLint("MissingPermission")
     @Composable
-    private fun BluetoothPicker(onPick: (BluetoothDevice) -> Unit, onDismiss: () -> Unit) {
+    private fun BluetoothPicker(onPick: (BluetoothDevice, Boolean) -> Unit, onDismiss: () -> Unit) {
         val mgr = getSystemService(BluetoothManager::class.java)
+        val adapter: BluetoothAdapter? = mgr?.adapter
         val bonded: List<BluetoothDevice> = try {
-            mgr?.adapter?.bondedDevices?.toList().orEmpty()
+            adapter?.bondedDevices?.toList().orEmpty()
         } catch (se: SecurityException) {
             emptyList()
         }
+        var scanning by remember { mutableStateOf(false) }
+        var bleHits by remember { mutableStateOf(listOf<BluetoothDevice>()) }
+        var scanMsg by remember { mutableStateOf<String?>(null) }
+        val scanCallback = remember {
+            object : android.bluetooth.le.ScanCallback() {
+                override fun onScanResult(type: Int, result: android.bluetooth.le.ScanResult) {
+                    val d = result.device
+                    if (bleHits.none { it.address == d.address }) bleHits = bleHits + d
+                }
+                override fun onScanFailed(code: Int) {
+                    scanMsg = "BLE scan failed ($code). Is Bluetooth on?"
+                    scanning = false
+                }
+            }
+        }
+        fun stopScan() {
+            try { adapter?.bluetoothLeScanner?.stopScan(scanCallback) } catch (_: Exception) {}
+            scanning = false
+        }
         Column(Modifier.fillMaxSize().padding(24.dp)) {
-            Text("Pick your paired ELM327", style = MaterialTheme.typography.headlineSmall)
-            Text("Usually named OBDII / ELM327 / VGate. Pair it in system Bluetooth first (PIN 0000 or 1234).",
+            Text("Pick your ELM327", style = MaterialTheme.typography.headlineSmall)
+            Spacer(Modifier.height(8.dp))
+            Text("Classic (OBDII / ELM327 / VGate) — pair in system Bluetooth first (PIN 0000 or 1234), then pick below.",
                 style = MaterialTheme.typography.bodySmall)
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(8.dp))
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(bonded) { d ->
-                    Card(onClick = { onPick(d) }) {
+                    Card(onClick = { stopScan(); onPick(d, false) }) {
                         Text("${d.name ?: "(no name)"}\n${d.address}", Modifier.padding(12.dp))
                     }
                 }
             }
-            if (bonded.isEmpty()) Text("No paired devices found.")
+            if (bonded.isEmpty()) Text("No paired classic devices.", style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(12.dp))
-            OutlinedButton(onClick = onDismiss) { Text("Close") }
+            Text("BLE adapters (odbble and friends need NO pairing — just scan and tap).",
+                style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(4.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = {
+                        bleHits = emptyList()
+                        scanMsg = null
+                        try {
+                            val s = adapter?.bluetoothLeScanner
+                            if (s == null) {
+                                scanMsg = "No BLE scanner — is Bluetooth on?"
+                            } else {
+                                s.startScan(
+                                    null,
+                                    android.bluetooth.le.ScanSettings.Builder()
+                                        .setScanMode(android.bluetooth.le.ScanSettings.SCAN_MODE_LOW_LATENCY)
+                                        .build(),
+                                    scanCallback,
+                                )
+                                scanning = true
+                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
+                                    { stopScan() }, 12_000
+                                )
+                            }
+                        } catch (se: SecurityException) {
+                            scanMsg = "Bluetooth permission denied."
+                        }
+                    },
+                    enabled = !scanning,
+                ) { Text(if (scanning) "Scanning…" else "Scan for BLE adapters") }
+                if (scanning) OutlinedButton(onClick = { stopScan() }) { Text("Stop") }
+            }
+            scanMsg?.let { Text(it, color = Color(0xFFB3261E)) }
+            Spacer(Modifier.height(8.dp))
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(bleHits) { d ->
+                    Card(onClick = { stopScan(); onPick(d, true) }) {
+                        Text("${d.name ?: "(no name)"} · BLE\n${d.address}", Modifier.padding(12.dp))
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(onClick = { stopScan(); onDismiss() }) { Text("Close") }
         }
     }
 }

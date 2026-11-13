@@ -98,11 +98,25 @@ class ObdRepository(
         }
     }
 
+    /** Bluetooth Classic (SPP) dongles: OBDII / ELM327 / VGate-SPP. */
     fun connect(adapter: BluetoothAdapter, device: BluetoothDevice, onDone: (Boolean, String?) -> Unit = { _, _ -> }) {
+        beginSession(device.name ?: device.address, { SppTransport(adapter, device) }, onDone)
+    }
+
+    /** Bluetooth LE dongles: the plug-ins Torque shows as "odbBLE" / "odbble". */
+    fun connectBle(context: android.content.Context, device: BluetoothDevice, onDone: (Boolean, String?) -> Unit = { _, _ -> }) {
+        beginSession(device.name ?: device.address, { BleTransport(context.applicationContext, device) }, onDone)
+    }
+
+    private fun beginSession(
+        label: String,
+        transport: () -> ElmTransport,
+        onDone: (Boolean, String?) -> Unit = { _, _ -> },
+    ) {
         stopPoll()
-        _state.update { it.copy(error = null, demoMode = false, deviceName = device.name ?: device.address) }
+        _state.update { it.copy(error = null, demoMode = false, deviceName = label) }
         scope.launch {
-            val c = Elm327Client(adapter, device)
+            val c = Elm327Client(transport())
             val ok = try {
                 withContext(Dispatchers.IO) { c.connect() }
             } catch (e: SecurityException) {
@@ -114,7 +128,7 @@ class ObdRepository(
             }
             if (!ok) {
                 c.close()
-                _state.update { it.copy(connected = false, error = "Couldn't talk to the ELM327. Is it paired and the ignition ON?") }
+                _state.update { it.copy(connected = false, error = "Couldn't talk to the ELM327. Classic dongles must be paired first; BLE ones (odbble) connect straight from scan. Ignition ON either way.") }
                 withContext(Dispatchers.Main) { onDone(false, "ELM init failed") }
                 return@launch
             }
