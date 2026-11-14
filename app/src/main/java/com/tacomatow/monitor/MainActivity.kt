@@ -58,6 +58,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -74,6 +75,7 @@ import com.tacomatow.monitor.obd.ObdForegroundService
 import com.tacomatow.monitor.obd.ObdHolder
 import com.tacomatow.monitor.obd.ObdUiState
 import com.tacomatow.monitor.ui.LocalTowPalette
+import kotlinx.coroutines.launch
 import com.tacomatow.monitor.ui.TacomaTheme
 import java.io.File
 
@@ -138,6 +140,9 @@ class MainActivity : ComponentActivity() {
         val state by ObdHolder.repository.state.collectAsState()
         var showPicker by remember { mutableStateOf(false) }
         var connectMsg by remember { mutableStateOf<String?>(null) }
+        var report by remember { mutableStateOf<com.tacomatow.monitor.obd.AdapterReport?>(null) }
+        var checking by remember { mutableStateOf(false) }
+        val scope = rememberCoroutineScope()
         val lastMac = remember { prefs.getString("last_mac", null) }
         val lastName = remember { prefs.getString("last_name", null) }
         var autoTried by remember { mutableStateOf(false) }
@@ -207,6 +212,21 @@ class MainActivity : ComponentActivity() {
                     Spacer(Modifier.height(8.dp))
                     NoticeCard(it)
                 }
+
+                Spacer(Modifier.height(10.dp))
+                AdapterVerdictPanel(
+                    connected = state.connected,
+                    checking = checking,
+                    report = report,
+                    onRun = {
+                        checking = true
+                        report = null
+                        scope.launch {
+                            report = ObdHolder.repository.runAdapterCheck()
+                            checking = false
+                        }
+                    },
+                )
 
                 Spacer(Modifier.height(14.dp))
                 GaugeCluster(state, onDemo = { ObdHolder.repository.startDemo() })
@@ -404,6 +424,124 @@ class MainActivity : ComponentActivity() {
                 )
                 Spacer(Modifier.size(8.dp))
                 Text(if (state.logging) "Stop log" else "Log trip")
+            }
+        }
+    }
+
+    /**
+     * Plain-language diagnosis of the adapter. Answers the only question that
+     * matters before spending money: can this dongle carry extended Toyota
+     * traffic at all, or is the truck refusing the identifier?
+     */
+    @Composable
+    private fun AdapterVerdictPanel(
+        connected: Boolean,
+        checking: Boolean,
+        report: com.tacomatow.monitor.obd.AdapterReport?,
+        onRun: () -> Unit,
+    ) {
+        val palette = LocalTowPalette.current
+        val accent = when (report?.verdict) {
+            com.tacomatow.monitor.obd.AdapterVerdict.EXTENDED_OK -> palette.ok
+            com.tacomatow.monitor.obd.AdapterVerdict.ECU_REFUSED -> palette.warn
+            com.tacomatow.monitor.obd.AdapterVerdict.SESSION_REFUSED,
+            com.tacomatow.monitor.obd.AdapterVerdict.ADAPTER_LIMITED,
+            com.tacomatow.monitor.obd.AdapterVerdict.BASELINE_FAILED -> palette.crit
+            else -> palette.idle
+        }
+        var showProbes by remember { mutableStateOf(false) }
+
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            modifier = Modifier.fillMaxWidth(),
+            border = androidx.compose.foundation.BorderStroke(
+                1.dp, MaterialTheme.colorScheme.outlineVariant,
+            ),
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "ADAPTER CHECK",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Button(onClick = onRun, enabled = connected && !checking) {
+                        Text(if (checking) "Checking…" else if (report == null) "Run" else "Re-run")
+                    }
+                }
+
+                if (report == null) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Tests whether this dongle can read Toyota's extended data. Run it before " +
+                            "buying another adapter.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    return@Column
+                }
+
+                Spacer(Modifier.height(10.dp))
+                Text(report.headline, style = MaterialTheme.typography.titleMedium, color = accent)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    report.detail,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                if (report.steps.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "WHAT TO DO",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    report.steps.forEachIndexed { index, step ->
+                        Row(Modifier.padding(bottom = 4.dp)) {
+                            Text(
+                                "${index + 1}.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = accent,
+                                modifier = Modifier.padding(end = 6.dp),
+                            )
+                            Text(step, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+
+                report.identity?.let {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Seen as $it" + (report.protocol?.let { p -> " · protocol $p" } ?: ""),
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                TextButton(onClick = { showProbes = !showProbes }) {
+                    Text(if (showProbes) "Hide probe details" else "Show probe details")
+                }
+                if (showProbes) {
+                    report.probes.forEach { (label, value) ->
+                        Row(Modifier.fillMaxWidth().padding(vertical = 1.dp)) {
+                            Text(
+                                label,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                value ?: "—",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontFamily = FontFamily.Monospace,
+                                ),
+                            )
+                        }
+                    }
+                }
             }
         }
     }

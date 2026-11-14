@@ -265,6 +265,41 @@ class ObdRepository(
         _state.update { it.copy(diagnostics = it.diagnostics + detectLog) }
     }
 
+    /**
+     * One-shot capability check: identity, protocol, baseline OBD, session
+     * control, a transmission read and a body-ECU read — then a verdict.
+     */
+    suspend fun runAdapterCheck(): AdapterReport {
+        val c = client ?: return AdapterReport.notConnected()
+        pollJob?.cancel()
+        try {
+            suspend fun ask(header: String?, cmd: String, ms: Int = 4_000): String? =
+                runBlockingProbe(c, header, cmd, ms)
+            val identity = ask(null, "ATI", 2_500)
+            val protocol = ask(null, "ATDPN", 2_500)
+            val baseline = ask(null, "0100", 4_000)
+            val session = ask(null, "1003", 2_500)
+            val trans = ask("701", "221627", 4_000)
+            val body = ask("750", "2114", 3_000)
+            return AdapterCheck.evaluate(identity, protocol, baseline, session, trans, body)
+        } finally {
+            if (_state.value.connected) startPoll(c)
+        }
+    }
+
+    private suspend fun runBlockingProbe(
+        c: Elm327Client,
+        header: String?,
+        command: String,
+        timeoutMs: Int,
+    ): String? = withContext(Dispatchers.IO) {
+        try {
+            c.readRaw(header?.takeIf { it.isNotBlank() }, command, timeoutMs)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     /** Raw command for the diagnostics console. Read-only by nature of what the UI sends. */
     suspend fun sendRaw(header: String?, command: String): String? {
         val c = client ?: return null
