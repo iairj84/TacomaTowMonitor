@@ -260,6 +260,41 @@ class ObdRepository(
         _state.update { it.copy(diagnostics = it.diagnostics + detectLog) }
     }
 
+    /**
+     * Read-only sweep of Toyota customize local identifiers.
+     * Pauses gauge polling while it runs so replies can't interleave, then
+     * restarts it. Never writes to any ECU.
+     */
+    suspend fun sweepCustomize(onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }): List<LidReading> {
+        val c = client ?: return emptyList()
+        pollJob?.cancel()
+        val total = CustomizeExplorer.totalProbes
+        val out = mutableListOf<LidReading>()
+        try {
+            for (target in CustomizeExplorer.TARGETS) {
+                for (lid in CustomizeExplorer.LID_RANGE) {
+                    val cmd = CustomizeExplorer.readCommand(lid)
+                    val raw = withContext(Dispatchers.IO) {
+                        try { c.readRaw(target.header, cmd, 1_200) } catch (_: Exception) { null }
+                    }
+                    val payload = raw?.let { c.payloadFor(cmd, it) }
+                    out += LidReading(
+                        header = target.header,
+                        ecuLabel = target.label,
+                        lid = lid,
+                        raw = raw,
+                        payloadHex = CustomizeExplorer.hex(payload),
+                    )
+                    onProgress(out.size, total)
+                    delay(70)
+                }
+            }
+        } finally {
+            if (_state.value.connected) startPoll(c)
+        }
+        return out
+    }
+
     private fun startPoll(c: Elm327Client) {
         pollJob?.cancel()
         pollJob = scope.launch {

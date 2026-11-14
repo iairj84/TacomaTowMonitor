@@ -235,6 +235,16 @@ class MainActivity : ComponentActivity() {
                     AdapterLog(state.diagnostics)
                 }
 
+                Spacer(Modifier.height(6.dp))
+                TextButton(
+                    onClick = {
+                        startActivity(Intent(this@MainActivity, CustomizeActivity::class.java))
+                    },
+                    enabled = state.connected,
+                ) {
+                    Text("Customize explorer (read-only)")
+                }
+
                 Spacer(Modifier.height(28.dp).navigationBarsPadding())
             }
         }

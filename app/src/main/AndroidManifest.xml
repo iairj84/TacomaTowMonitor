@@ -36,6 +36,12 @@
             </intent-filter>
         </activity>
 
+        <!-- Read-only Toyota customize (C-BEST) discovery. No writes. -->
+        <activity
+            android:name=".CustomizeActivity"
+            android:exported="false"
+            android:label="Customize explorer" />
+
         <!-- Foreground OBD polling service keeps the ELM327 socket alive
              while towing, even with the screen off. -->
         <service
