@@ -82,25 +82,36 @@ class Elm327Client(
     fun transcript(): List<String> = transport.transcript()
 
     /**
-     * Read one PID. Returns decoded value or null (unsupported / timeout).
-     * Retried once: BLE clones drop the occasional reply, and a lone miss
-     * must not read as "no data" on a gauge.
+     * Outcome of a PID read. [definitiveMiss] means the ECU answered "no
+     * data" — retrying is pointless and expensive, so callers can back off
+     * instead of burning seconds on a PID this vehicle does not publish.
      */
-    fun readPid(def: PidDef): Float? {
-        if (!open) return null
+    data class PidAttempt(val value: Float?, val definitiveMiss: Boolean)
+
+    /**
+     * Read one PID. Retried once on a *silent* miss: BLE clones drop the
+     * occasional reply and a lone drop must not blank a gauge. An explicit
+     * NO DATA is not retried.
+     */
+    fun readPidAttempt(def: PidDef): PidAttempt {
+        if (!open) return PidAttempt(null, false)
         setHeader(def.header)
         val cmd = TacomaPids.command(def)
         repeat(2) { attempt ->
             val raw = transport.transact(cmd, 3_500)
             if (raw != null) {
+                val noData = raw.contains("NODATA") || raw.contains("?") || raw.contains("ERROR")
                 val bytes = parseResponse(cmd, raw)
                 val value = bytes?.let { TacomaPids.decode(def, it) }
-                if (value != null) return value
+                if (value != null) return PidAttempt(value, false)
+                if (noData) return PidAttempt(null, true)
             }
             if (attempt == 0) Thread.sleep(120)
         }
-        return null
+        return PidAttempt(null, false)
     }
+
+    fun readPid(def: PidDef): Float? = readPidAttempt(def).value
 
     /** Raw hex reply for an arbitrary header/command — used by PID detection. */
     fun readRaw(header: String?, command: String, timeoutMs: Int = 3_500): String? {

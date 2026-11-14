@@ -260,6 +260,33 @@ class ObdRepository(
         _state.update { it.copy(diagnostics = it.diagnostics + detectLog) }
     }
 
+    /** Raw command for the diagnostics console. Read-only by nature of what the UI sends. */
+    suspend fun sendRaw(header: String?, command: String): String? {
+        val c = client ?: return null
+        return withContext(Dispatchers.IO) {
+            try {
+                c.readRaw(header?.takeIf { it.isNotBlank() }, command, 5_000)
+            } catch (_: Exception) {
+                null
+            }
+        }
+    }
+
+    /** Adapter identity, current protocol and bus voltage. */
+    suspend fun adapterIdentity(): List<Pair<String, String?>> {
+        val c = client ?: return emptyList()
+        pollJob?.cancel()
+        return try {
+            listOf(
+                "Adapter" to withContext(Dispatchers.IO) { try { c.readRaw(null, "ATI", 3_000) } catch (_: Exception) { null } },
+                "Protocol" to withContext(Dispatchers.IO) { try { c.readRaw(null, "ATDPN", 3_000) } catch (_: Exception) { null } },
+                "Voltage" to withContext(Dispatchers.IO) { try { c.readRaw(null, "ATRV", 3_000) } catch (_: Exception) { null } },
+            )
+        } finally {
+            if (_state.value.connected) startPoll(c)
+        }
+    }
+
     /**
      * Read-only sweep of Toyota customize local identifiers.
      * Pauses gauge polling while it runs so replies can't interleave, then
@@ -303,14 +330,34 @@ class ObdRepository(
             // gauge the driver is watching, so keep the last good value and
             // mark it HOLD until it goes properly stale.
             val lastGood = mutableMapOf<String, Pair<Float, Long>>()
+            val misses = mutableMapOf<String, Int>()
+            // PIDs the vehicle flatly doesn't publish are parked for a while.
+            // Without this, three dead PIDs cost ~20s per sweep and starve the
+            // ones that do work (speed and coolant went blank because of it).
+            val parkedUntil = mutableMapOf<String, Long>()
             while (isActive && c.isConnected()) {
                 val out = mutableMapOf<String, GaugeReading>()
                 // Transmission definitions are whatever detection found.
                 val pollList = listOf(panDef, convDef, TacomaPids.COOLANT, TacomaPids.OIL, TacomaPids.RPM, TacomaPids.SPEED)
                 for (def in pollList) {
                     if (!isActive) break
-                    val v = withContext(Dispatchers.IO) {
-                        try { c.readPid(def) } catch (_: Exception) { null }
+                    val now0 = System.currentTimeMillis()
+                    if ((parkedUntil[def.id] ?: 0L) > now0) continue
+                    val attempt = withContext(Dispatchers.IO) {
+                        try {
+                            c.readPidAttempt(def)
+                        } catch (_: Exception) {
+                            Elm327Client.PidAttempt(null, false)
+                        }
+                    }
+                    val v = attempt.value
+                    if (v == null && attempt.definitiveMiss) {
+                        val n = (misses[def.id] ?: 0) + 1
+                        misses[def.id] = n
+                        if (n >= 2) parkedUntil[def.id] = now0 + 120_000
+                    } else if (v != null) {
+                        misses[def.id] = 0
+                        parkedUntil.remove(def.id)
                     }
                     val now = System.currentTimeMillis()
                     if (v != null) lastGood[def.id] = v to now

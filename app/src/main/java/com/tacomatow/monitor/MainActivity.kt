@@ -236,13 +236,23 @@ class MainActivity : ComponentActivity() {
                 }
 
                 Spacer(Modifier.height(6.dp))
-                TextButton(
-                    onClick = {
-                        startActivity(Intent(this@MainActivity, CustomizeActivity::class.java))
-                    },
-                    enabled = state.connected,
-                ) {
-                    Text("Customize explorer (read-only)")
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(
+                        onClick = {
+                            startActivity(Intent(this@MainActivity, CustomizeActivity::class.java))
+                        },
+                        enabled = state.connected,
+                    ) {
+                        Text("Customize explorer")
+                    }
+                    TextButton(
+                        onClick = {
+                            startActivity(Intent(this@MainActivity, DiagnosticsActivity::class.java))
+                        },
+                        enabled = state.connected,
+                    ) {
+                        Text("Diagnostics")
+                    }
                 }
 
                 Spacer(Modifier.height(28.dp).navigationBarsPadding())
@@ -526,10 +536,10 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun MiniGauge(g: GaugeReading?, modifier: Modifier = Modifier) {
+    private fun MiniGauge(g: GaugeReading, modifier: Modifier = Modifier) {
         val palette = LocalTowPalette.current
-        val value = g?.valueF
-        val accent = when (g?.status) {
+        val value = g.valueF
+        val accent = when (g.status) {
             "CRIT" -> palette.crit
             "WARN" -> palette.warn
             "HOLD", "NO DATA" -> palette.idle
@@ -544,7 +554,7 @@ class MainActivity : ComponentActivity() {
         ) {
             Column(Modifier.padding(14.dp)) {
                 Text(
-                    (g?.label ?: "—").uppercase(),
+                    g.label.uppercase(),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -552,13 +562,13 @@ class MainActivity : ComponentActivity() {
                 Row(verticalAlignment = Alignment.Bottom) {
                     Text(
                         value?.let {
-                            if (g?.unit == "rpm") it.toInt().toString() else "%.0f".format(it)
+                            if (g.unit == "rpm") it.toInt().toString() else "%.0f".format(it)
                         } ?: "—",
                         style = MaterialTheme.typography.headlineMedium,
                         color = if (value == null) palette.idle else accent,
                     )
                     Text(
-                        " ${g?.unit ?: ""}",
+                        " ${g.unit}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(bottom = 4.dp, start = 3.dp),
@@ -609,13 +619,19 @@ class MainActivity : ComponentActivity() {
             HeroGauge(pan, "Transmission pan", 220f, 240f)
             HeroGauge(conv, "Converter out", 230f, 250f)
 
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                MiniGauge(state.readings["coolant"], Modifier.weight(1f))
-                MiniGauge(state.readings["rpm"], Modifier.weight(1f))
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                MiniGauge(state.readings["oil"], Modifier.weight(1f))
-                MiniGauge(state.readings["speed"], Modifier.weight(1f))
+            // Only render cards that exist — an empty tile with a dash is noise.
+            val minis = listOf("coolant", "rpm", "oil", "speed")
+                .mapNotNull { state.readings[it] }
+            minis.chunked(2).forEach { pair ->
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    pair.forEach { reading ->
+                        MiniGauge(reading, Modifier.weight(1f))
+                    }
+                    if (pair.size == 1) Spacer(Modifier.weight(1f))
+                }
             }
 
             Row(

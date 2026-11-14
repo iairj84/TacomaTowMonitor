@@ -36,6 +36,12 @@
             </intent-filter>
         </activity>
 
+        <!-- Raw ELM327 console for proving what an adapter can and cannot do. -->
+        <activity
+            android:name=".DiagnosticsActivity"
+            android:exported="false"
+            android:label="Adapter diagnostics" />
+
         <!-- Read-only Toyota customize (C-BEST) discovery. No writes. -->
         <activity
             android:name=".CustomizeActivity"
