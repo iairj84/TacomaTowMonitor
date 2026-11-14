@@ -148,6 +148,14 @@ class MainActivity : ComponentActivity() {
         var autoTried by remember { mutableStateOf(false) }
         val context = LocalContext.current
 
+        // Set-and-forget: once a real adapter connects, keep polling with the
+        // screen off without asking. Demo mode is excluded (no hardware).
+        LaunchedEffect(state.connected, state.demoMode) {
+            if (state.connected && !state.demoMode) {
+                startForegroundService(Intent(this@MainActivity, ObdForegroundService::class.java))
+            }
+        }
+
         // Auto-reconnect to the dongle used last time, once, on launch.
         LaunchedEffect(lastMac) {
             val mac = lastMac ?: return@LaunchedEffect
