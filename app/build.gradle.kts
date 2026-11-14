@@ -12,8 +12,8 @@ android {
         applicationId = "com.tacomatow.monitor"
         minSdk = 26
         targetSdk = 35
-        versionCode = 18
-        versionName = "0.4.2"
+        versionCode = 19
+        versionName = "0.4.3"
 
         // Required by the Car App Library host.
         manifestPlaceholders["carAppMinCarApiLevel"] = "1"

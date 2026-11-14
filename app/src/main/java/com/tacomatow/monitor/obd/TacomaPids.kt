@@ -90,6 +90,10 @@ object TacomaPids {
     )
 
     val TRANS_CANDIDATES = listOf(
+        // Functional (broadcast) addressing is what Torque uses when the header
+        // field is left blank — the RAV4 owners who got ATF temp with a $5
+        // dongle were doing exactly this. Try it first, it costs nothing.
+        TransCandidate(null, "22", "1627", "1627", "22/1627@functional"),
         TransCandidate("701", "22", "1627", "1627", "22/1627@701"),
         // ScanGauge's published 2016+ Tacoma 3.5L X-Gauges use these DIDs
         // (TXD 0701221AAA / 0701221AC0) instead of 1627/1628. Owners disagree
@@ -105,6 +109,7 @@ object TacomaPids {
     )
 
     val CONVERTER_CANDIDATES = listOf(
+        TransCandidate(null, "22", "1628", "1628", "22/1628@functional"),
         TransCandidate("701", "22", "1628", "1628", "22/1628@701"),
         TransCandidate("701", "22", "1AC0", "1AC0", "22/1AC0@701"),
         TransCandidate("7E0", "22", "1AC0", "1AC0", "22/1AC0@7E0"),

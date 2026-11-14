@@ -225,6 +225,7 @@ class ObdRepository(
         }
         detectLog.add(if (sessionOk) "session: 10 03 accepted" else "session: 10 03 refused")
 
+        var panFound = false
         for (cand in TacomaPids.TRANS_CANDIDATES) {
             val cmd = cand.mode + cand.pid
             val raw = withContext(Dispatchers.IO) {
@@ -239,9 +240,44 @@ class ObdRepository(
             if (f != null && f > 20f && f < 400f) {
                 panDef = TacomaPids.defFor(cand, "trans_pan", "Trans Pan", 220f, 240f)
                 detectLog.add("pan: using ${cand.label}")
+                panFound = true
                 break
             }
             delay(120)
+        }
+
+        // Nothing answered on the pinned CAN protocol. Torque defaults to
+        // auto-search, and cheap clones sometimes only behave there, so give
+        // that a shot before declaring the truck unsupported.
+        if (!panFound) {
+            detectLog.add("retry: switching to auto protocol (ATSP0)")
+            val switched = withContext(Dispatchers.IO) {
+                try { c.setAutoProtocol() } catch (_: Exception) { false }
+            }
+            if (switched) {
+                for (cand in listOf(
+                    TacomaPids.TransCandidate(null, "22", "1627", "1627", "22/1627@functional(auto)"),
+                    TacomaPids.TransCandidate("701", "22", "1627", "1627", "22/1627@701(auto)"),
+                )) {
+                    val cmd = cand.mode + cand.pid
+                    val raw = withContext(Dispatchers.IO) {
+                        try { c.readRaw(cand.header, cmd) } catch (_: Exception) { null }
+                    }
+                    val bytes = raw?.let { c.payloadFor(cmd, it) }
+                    val f = bytes?.let { TacomaPids.decodeTrans(cand.kind, it) }
+                    detectLog.add(
+                        "pan ${cand.label}: ${raw?.take(40) ?: "<no reply>"} -> " +
+                            (f?.let { "%.0f°F".format(it) } ?: "-")
+                    )
+                    if (f != null && f > 20f && f < 400f) {
+                        panDef = TacomaPids.defFor(cand, "trans_pan", "Trans Pan", 220f, 240f)
+                        detectLog.add("pan: using ${cand.label}")
+                        panFound = true
+                        break
+                    }
+                    delay(120)
+                }
+            }
         }
 
         for (cand in TacomaPids.CONVERTER_CANDIDATES) {

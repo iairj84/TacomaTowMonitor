@@ -127,6 +127,18 @@ class Elm327Client(
         return ok
     }
 
+    /**
+     * Drop back to automatic protocol selection. Some clones behave
+     * differently pinned (ATSP6) than in auto-search, and Torque defaults to
+     * auto — worth matching when a pinned session returns nothing.
+     */
+    fun setAutoProtocol(): Boolean {
+        val r = transport.transact("ATSP0", 4_000)
+        protocol = "0"
+        currentHeader = null
+        return r != null
+    }
+
     /** Raw hex reply for an arbitrary header/command — used by PID detection. */
     fun readRaw(header: String?, command: String, timeoutMs: Int = 3_500): String? {
         if (!open) return null
