@@ -203,8 +203,10 @@ class ObdRepository(
     private fun startPoll(c: Elm327Client) {
         pollJob?.cancel()
         pollJob = scope.launch {
-            // First sweep: mark unsupported PIDs (oil 015C on many 2GR-FKS) once.
-            val supported = mutableMapOf<String, Boolean>()
+            // BLE clones lose the odd reply. A single miss must never wipe a
+            // gauge the driver is watching, so keep the last good value and
+            // mark it HOLD until it goes properly stale.
+            val lastGood = mutableMapOf<String, Pair<Float, Long>>()
             while (isActive && c.isConnected()) {
                 val out = mutableMapOf<String, GaugeReading>()
                 for (def in TacomaPids.ALL) {
@@ -212,22 +214,10 @@ class ObdRepository(
                     val v = withContext(Dispatchers.IO) {
                         try { c.readPid(def) } catch (_: Exception) { null }
                     }
-                    if (v == null && supported[def.id] != false) {
-                        // One silent retry before calling it unsupported.
-                        delay(200)
-                        val retry = withContext(Dispatchers.IO) {
-                            try { c.readPid(def) } catch (_: Exception) { null }
-                        }
-                        if (retry == null) supported[def.id] = false
-                        else { supported[def.id] = true; out[def.id] = gauge(def, retry) }
-                        if (retry == null) out[def.id] = GaugeReading(def.id, def.label, null, def.unit, "NO DATA")
-                    } else if (v != null) {
-                        supported[def.id] = true
-                        out[def.id] = gauge(def, v)
-                    } else {
-                        out[def.id] = GaugeReading(def.id, def.label, null, def.unit, "NO DATA")
-                    }
-                    delay(120) // give the ELM bus a breath between header flips
+                    val now = System.currentTimeMillis()
+                    if (v != null) lastGood[def.id] = v to now
+                    out[def.id] = readingFor(def, v, lastGood[def.id], now)
+                    delay(150) // BLE needs a beat between header flips
                 }
                 val volts = withContext(Dispatchers.IO) {
                     try { c.readVoltage() } catch (_: Exception) { null }
@@ -236,10 +226,23 @@ class ObdRepository(
                     it.copy(readings = out, voltage = volts, lastUpdateMs = System.currentTimeMillis())
                 }
                 appendLog(out, volts)
-                delay(600)
+                delay(800)
             }
             _state.update { it.copy(connected = false) }
         }
+    }
+
+    private fun readingFor(
+        def: PidDef,
+        v: Float?,
+        cached: Pair<Float, Long>?,
+        now: Long,
+    ): GaugeReading {
+        if (v != null) return gauge(def, v)
+        if (cached != null && now - cached.second < 15_000) {
+            return GaugeReading(def.id, def.label, cached.first, def.unit, "HOLD")
+        }
+        return GaugeReading(def.id, def.label, null, def.unit, "NO DATA")
     }
 
     private fun gauge(def: PidDef, v: Float): GaugeReading {

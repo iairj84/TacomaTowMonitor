@@ -68,13 +68,25 @@ class Elm327Client(
     /** Setup trail for the in-app adapter log. */
     fun transcript(): List<String> = transport.transcript()
 
-    /** Read one PID. Returns decoded value or null (unsupported / timeout). */
+    /**
+     * Read one PID. Returns decoded value or null (unsupported / timeout).
+     * Retried once: BLE clones drop the occasional reply, and a lone miss
+     * must not read as "no data" on a gauge.
+     */
     fun readPid(def: PidDef): Float? {
         if (!open) return null
         setHeader(def.header)
-        val raw = transport.transact(TacomaPids.command(def), 2_500) ?: return null
-        val bytes = parseResponse(TacomaPids.command(def), raw) ?: return null
-        return TacomaPids.decode(def, bytes)
+        val cmd = TacomaPids.command(def)
+        repeat(2) { attempt ->
+            val raw = transport.transact(cmd, 3_500)
+            if (raw != null) {
+                val bytes = parseResponse(cmd, raw)
+                val value = bytes?.let { TacomaPids.decode(def, it) }
+                if (value != null) return value
+            }
+            if (attempt == 0) Thread.sleep(120)
+        }
+        return null
     }
 
     fun readVoltage(): Float? {
@@ -87,11 +99,14 @@ class Elm327Client(
     private fun setHeader(header: String?) {
         if (header == currentHeader) return
         if (header == null) {
-            transport.transact("AT SH 7DF", 1_000)
+            transport.transact("AT SH 7DF", 1_500)
         } else {
-            transport.transact("AT SH $header", 1_000)
+            transport.transact("AT SH $header", 1_500)
         }
         currentHeader = header
+        // BLE clones need a beat to settle after an address change; reading
+        // immediately returns a shifted/empty frame.
+        Thread.sleep(250)
     }
 
     /**

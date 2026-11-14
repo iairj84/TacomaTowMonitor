@@ -353,6 +353,10 @@ class BleTransport(
     override fun transact(cmd: String, timeoutMs: Int): String? {
         val g = gatt ?: return null
         val w = writeChar ?: return null
+        // Swallow any late bytes from the previous command first, otherwise a
+        // slow clone's leftover frame gets parsed as this command's answer.
+        rx.clear()
+        Thread.sleep(60)
         rx.clear()
         return try {
             val payload = (cmd + "\r").toByteArray()

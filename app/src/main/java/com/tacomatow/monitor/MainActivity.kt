@@ -20,6 +20,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
@@ -86,7 +88,13 @@ class MainActivity : ComponentActivity() {
         var showPicker by remember { mutableStateOf(false) }
         var connectMsg by remember { mutableStateOf<String?>(null) }
 
-        Column(Modifier.fillMaxSize().padding(16.dp)) {
+        // One scrollable column: gauges, buttons and the adapter log all reachable.
+        Column(
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+        ) {
             Text("Tacoma Tow Monitor", style = MaterialTheme.typography.headlineSmall)
             Text(
                 "2019 Tacoma V6 A/T · ELM327 · trans pan / converter, coolant, oil",
@@ -211,8 +219,8 @@ class MainActivity : ComponentActivity() {
             Text("Talking to the adapter… first sweep takes a few seconds (header flips to 701 for trans temps).")
             return
         }
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(cards) { g ->
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            cards.forEach { g ->
                 val bg = when (g.status) {
                     "CRIT" -> Color(0xFFF8D7DA)
                     "WARN" -> Color(0xFFFFF3CD)
@@ -232,10 +240,17 @@ class MainActivity : ComponentActivity() {
                         Column {
                             Text(g.unit, style = MaterialTheme.typography.bodyMedium)
                             Text(
-                                g.status ?: if (g.valueF == null) "" else "OK",
+                                when (g.status) {
+                                    "CRIT" -> "CRITICAL"
+                                    "WARN" -> "HOT"
+                                    "HOLD" -> "HOLDING"
+                                    "NO DATA" -> "NO DATA"
+                                    else -> if (g.valueF == null) "" else "OK"
+                                },
                                 color = when (g.status) {
                                     "CRIT" -> Color(0xFFB3261E)
                                     "WARN" -> Color(0xFF8A6D00)
+                                    "HOLD" -> Color(0xFF6A6A6A)
                                     "NO DATA" -> Color.Gray
                                     else -> Color(0xFF2E7D32)
                                 },
@@ -244,13 +259,10 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
-            item {
-                Text("Adapter ${state.voltage?.let { "%.1fV".format(it) } ?: ""} · updated ${state.lastUpdateMs.takeIf { it > 0 }?.let { android.text.format.DateFormat.format("HH:mm:ss", it) } ?: "—"}",
-                    style = MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.height(4.dp))
-                Text("Tow rule of thumb: pan >220°F back off, >240°F stop and cool. Converter runs hotter — watch the spread under load.",
-                    style = MaterialTheme.typography.bodySmall)
-            }
+            Text("Adapter ${state.voltage?.let { "%.1fV".format(it) } ?: ""} · updated ${state.lastUpdateMs.takeIf { it > 0 }?.let { android.text.format.DateFormat.format("HH:mm:ss", it) } ?: "—"}",
+                style = MaterialTheme.typography.bodySmall)
+            Text("Tow rule of thumb: pan >220°F back off, >240°F stop and cool. Converter runs hotter — watch the spread under load.",
+                style = MaterialTheme.typography.bodySmall)
         }
     }
 
