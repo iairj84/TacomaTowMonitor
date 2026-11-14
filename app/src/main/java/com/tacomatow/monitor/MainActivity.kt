@@ -219,6 +219,49 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** One BLE sighting: advertised name if there is one, live signal level. */
+    private data class BleHit(val device: BluetoothDevice, val name: String?, val rssi: Int)
+
+    private val OBD_KEYWORDS = listOf(
+        "obd", "obd2", "elm", "vgate", "vlink", "veepeak", "odb", "odble",
+        "kiwi", "plx", "lemur", "konnwei", "tonwon", "icar", "obdlink",
+        "bafx", "vcheck", "foseal", "panlong", "vpeak",
+    )
+
+    private fun looksLikeObd(name: String?): Boolean {
+        val n = name?.lowercase().orEmpty()
+        return OBD_KEYWORDS.any { n.contains(it) }
+    }
+
+    private fun rssiBars(rssi: Int): String = when {
+        rssi >= -55 -> "▂▄▆█"
+        rssi >= -67 -> "▂▄▆"
+        rssi >= -80 -> "▂▄"
+        else -> "▂"
+    }
+
+    @Composable
+    private fun BleRow(h: BleHit, onTap: () -> Unit) {
+        Card(onClick = onTap, modifier = Modifier.fillMaxWidth()) {
+            Row(
+                Modifier.fillMaxWidth().padding(12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        h.name ?: "Unknown device",
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Text(h.device.address, style = MaterialTheme.typography.bodySmall)
+                }
+                Text(
+                    "${rssiBars(h.rssi)} ${h.rssi} dBm",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+    }
+
     @SuppressLint("MissingPermission")
     @Composable
     private fun BluetoothPicker(onPick: (BluetoothDevice, Boolean) -> Unit, onDismiss: () -> Unit) {
@@ -230,13 +273,21 @@ class MainActivity : ComponentActivity() {
             emptyList()
         }
         var scanning by remember { mutableStateOf(false) }
-        var bleHits by remember { mutableStateOf(listOf<BluetoothDevice>()) }
+        var bleHits by remember { mutableStateOf(listOf<BleHit>()) }
+        var showAllBle by remember { mutableStateOf(false) }
         var scanMsg by remember { mutableStateOf<String?>(null) }
         val scanCallback = remember {
             object : android.bluetooth.le.ScanCallback() {
+                @SuppressLint("MissingPermission")
                 override fun onScanResult(type: Int, result: android.bluetooth.le.ScanResult) {
-                    val d = result.device
-                    if (bleHits.none { it.address == d.address }) bleHits = bleHits + d
+                    val d = result.device ?: return
+                    // Advertised name is far more reliable than the cached device name.
+                    val name = try {
+                        result.scanRecord?.deviceName ?: d.name
+                    } catch (se: SecurityException) { null }
+                    val hit = BleHit(d, name, result.rssi)
+                    bleHits = (bleHits.filterNot { it.device.address == d.address } + hit)
+                        .sortedByDescending { it.rssi }
                 }
                 override fun onScanFailed(code: Int) {
                     scanMsg = "BLE scan failed ($code). Is Bluetooth on?"
@@ -309,9 +360,34 @@ class MainActivity : ComponentActivity() {
                 scanMsg?.let { msg ->
                     item { Text(msg, color = Color(0xFFB3261E)) }
                 }
-                items(bleHits) { d ->
-                    Card(onClick = { stopScan(); onPick(d, true) }) {
-                        Text("${d.name ?: "(no name)"} · BLE\n${d.address}", Modifier.padding(12.dp))
+                run {
+                    val likely = bleHits.filter { looksLikeObd(it.name) }
+                    val other = bleHits.filterNot { looksLikeObd(it.name) }
+                    if (bleHits.isNotEmpty() && likely.isEmpty()) {
+                        item {
+                            Text("No obvious OBD names in range — your dongle may advertise only a MAC address. Closest (strongest signal) first:",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                    } else if (likely.isNotEmpty()) {
+                        item {
+                            Text("Likely OBD adapters — tap to connect:",
+                                style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                    items(likely, key = { it.device.address }) { h ->
+                        BleRow(h) { stopScan(); onPick(h.device, true) }
+                    }
+                    if (other.isNotEmpty()) {
+                        item {
+                            OutlinedButton(onClick = { showAllBle = !showAllBle }) {
+                                Text(if (showAllBle) "Hide ${other.size} other Bluetooth devices" else "Show ${other.size} other Bluetooth devices")
+                            }
+                        }
+                    }
+                    if (showAllBle) {
+                        items(other, key = { it.device.address }) { h ->
+                            BleRow(h) { stopScan(); onPick(h.device, true) }
+                        }
                     }
                 }
             }
