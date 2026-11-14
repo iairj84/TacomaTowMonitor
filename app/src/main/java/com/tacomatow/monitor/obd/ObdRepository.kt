@@ -219,6 +219,11 @@ class ObdRepository(
         panDef = TacomaPids.TRANS_PAN
         convDef = TacomaPids.TRANS_CONVERTER
         detectLog.add("protocol: ATSP${c.activeProtocol()}")
+        // Manufacturer reads are frequently refused in the default session.
+        val sessionOk = withContext(Dispatchers.IO) {
+            try { c.enterExtendedSession() } catch (_: Exception) { false }
+        }
+        detectLog.add(if (sessionOk) "session: 10 03 accepted" else "session: 10 03 refused")
 
         for (cand in TacomaPids.TRANS_CANDIDATES) {
             val cmd = cand.mode + cand.pid
@@ -298,6 +303,11 @@ class ObdRepository(
         val total = CustomizeExplorer.totalProbes
         val out = mutableListOf<LidReading>()
         try {
+            // Try to open the extended session so body ECUs answer at all.
+            val sessionOk = withContext(Dispatchers.IO) {
+                try { c.enterExtendedSession() } catch (_: Exception) { false }
+            }
+            onProgress(0, total)
             for (target in CustomizeExplorer.TARGETS) {
                 for (lid in CustomizeExplorer.LID_RANGE) {
                     val cmd = CustomizeExplorer.readCommand(lid)

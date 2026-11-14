@@ -113,6 +113,20 @@ class Elm327Client(
 
     fun readPid(def: PidDef): Float? = readPidAttempt(def).value
 
+    /**
+     * Enter the extended diagnostic session (10 03). Toyota ECUs and the
+     * 0x701 gateway commonly refuse manufacturer reads in the default
+     * session, answering "no data" — which looks identical to an unsupported
+     * PID. Harmless and non-persistent: it lapses on power cycle/idle.
+     */
+    fun enterExtendedSession(): Boolean {
+        if (!open) return false
+        setHeader(null)
+        val r = transport.transact("1003", 2_500)
+        val ok = r != null && !r.contains("7F")
+        return ok
+    }
+
     /** Raw hex reply for an arbitrary header/command — used by PID detection. */
     fun readRaw(header: String?, command: String, timeoutMs: Int = 3_500): String? {
         if (!open) return null
