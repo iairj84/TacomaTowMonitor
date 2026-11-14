@@ -39,6 +39,10 @@ data class ObdUiState(
     val lastUpdateMs: Long = 0L,
     val error: String? = null,
     val logging: Boolean = false,
+    /** Adapter setup trail, newest last — for the in-app log. */
+    val diagnostics: List<String> = emptyList(),
+    /** True once a session got far enough to have an adapter trail worth showing. */
+    val triedConnect: Boolean = false,
 )
 
 /**
@@ -128,14 +132,31 @@ class ObdRepository(
             }
             if (!ok) {
                 c.close()
-                val detail = c.transportStage().takeIf { it.isNotEmpty() && it != "ready" }
-                ?.let { " (stuck at: $it)" }.orEmpty()
-                _state.update { it.copy(connected = false, error = "Couldn't talk to the ELM327$detail. Classic dongles must be paired first; BLE ones (odbble) connect straight from scan. Ignition ON either way.") }
+                val stage = c.transportStage()
+                val msg = when {
+                    stage.isEmpty() || stage == "ready" ->
+                        "Connected to the adapter, but it never answered AT commands. Ignition must be ON for it to reply — turn the key to ON and try again."
+                    stage == "no-answer-on-probe" ->
+                        "Paired over BLE but the dongle stayed silent on every data channel. Force-close Torque/Torque Pro and any other OBD app, then retry."
+                    stage == "link-timeout" ->
+                        "Couldn't establish the BLE link. Move the phone closer to the dongle and check nothing else is connected to it."
+                    else -> "Couldn't open the adapter ($stage). See the adapter log below."
+                }
+                _state.update {
+                    it.copy(
+                        connected = false,
+                        error = msg,
+                        triedConnect = true,
+                        diagnostics = c.transcript(),
+                    )
+                }
                 withContext(Dispatchers.Main) { onDone(false, "ELM init failed") }
                 return@launch
             }
             client = c
-            _state.update { it.copy(connected = true, error = null) }
+            _state.update {
+                it.copy(connected = true, error = null, triedConnect = true, diagnostics = c.transcript())
+            }
             withContext(Dispatchers.Main) { onDone(true, null) }
             startPoll(c)
         }

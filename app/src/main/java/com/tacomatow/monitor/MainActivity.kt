@@ -122,6 +122,10 @@ class MainActivity : ComponentActivity() {
                 Spacer(Modifier.height(8.dp))
                 Text(it, color = Color(0xFFB3261E))
             }
+            if (state.triedConnect) {
+                Spacer(Modifier.height(8.dp))
+                AdapterLog(state.diagnostics)
+            }
         }
 
         if (showPicker) {
@@ -165,11 +169,40 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
+    private fun AdapterLog(lines: List<String>) {
+        var open by remember { mutableStateOf(false) }
+        Column {
+            OutlinedButton(onClick = { open = !open }) {
+                Text(if (open) "Hide adapter log" else "Show adapter log")
+            }
+            if (open) {
+                if (lines.isEmpty()) {
+                    Text("No log yet.", style = MaterialTheme.typography.bodySmall)
+                } else {
+                    Card {
+                        Column(Modifier.padding(12.dp)) {
+                            lines.forEach { line ->
+                                Text(line, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
     private fun GaugeGrid(state: ObdUiState) {
         val order = listOf("trans_pan", "trans_conv", "coolant", "oil", "rpm", "speed")
         val cards = order.mapNotNull { state.readings[it] }
         if (!state.connected) {
-            Card { Text("Pair your ELM327 in Android Bluetooth settings first, ignition ON, then Connect. Or tap Demo to preview the tow layout.", Modifier.padding(16.dp)) }
+            Card {
+                Text(
+                    "Tap Connect: paired classic dongles appear first, or scan for BLE ones (odbble). " +
+                        "Turn the ignition ON so the adapter can answer. Tap Demo to preview the layout.",
+                    Modifier.padding(16.dp),
+                )
+            }
             return
         }
         if (cards.isEmpty()) {

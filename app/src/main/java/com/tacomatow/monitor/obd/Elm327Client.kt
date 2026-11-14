@@ -5,8 +5,10 @@ package com.tacomatow.monitor.obd
  * ([SppTransport]) and BLE GATT ([BleTransport]). Runs on a worker thread;
  * never on main.
  *
- * Init: ATZ / ATE0 / ATL0 / ATS0 / ATH1 / ATSP0, then per-PID header
- * switching (AT SH 701 for Tacoma trans temps, AT SH 7DF for Mode 01).
+ * Init is deliberately TOLERANT: a quiet reply to a cosmetic command
+ * (ATE0/ATS0) must not abort the whole connection, and cheap BLE clones
+ * routinely need several seconds before their first answer after power-up.
+ * The session only fails if the adapter never says anything at all.
  */
 class Elm327Client(
     private val transport: ElmTransport,
@@ -14,40 +16,63 @@ class Elm327Client(
     private var currentHeader: String? = null
     @Volatile private var open = false
 
-    fun connect(timeoutMs: Int = 15_000): Boolean {
+    fun connect(): Boolean {
         if (!transport.open()) return false
         open = true
-        // Order matters: reset, quiet echo/linefeeds, show headers so we can
-        // validate ECU addresses, auto protocol for the Tacoma's 11-bit 500k CAN.
-        val init = listOf("ATZ", "ATE0", "ATL0", "ATS0", "ATH1", "ATSP0")
-        for (cmd in init) {
-            val resp = transport.transact(cmd, 3_000) ?: return false
-            if (cmd == "ATZ" && resp.isBlank()) {
-                // Cheap clones sometimes swallow the first reset; one retry.
-                transport.transact(cmd, 3_000) ?: return false
-            }
+        var anyAnswer = false
+
+        // Reset first, generously. BLE clones often stay silent for seconds
+        // after the notify subscription arms; retry once before giving up.
+        var reset = transport.transact("ATZ", 8_000)
+        if (reset.isNullOrBlank()) {
+            Thread.sleep(600)
+            reset = transport.transact("AT", 4_000)
+            transport.transact("ATZ", 8_000)
         }
-        // Warm the protocol on the bus so the first gauge read is fast.
-        transport.transact("0100", 5_000)
+        if (!reset.isNullOrBlank()) anyAnswer = true
+
+        // Cosmetic setup: never fatal if a clone ignores one of these.
+        transport.transact("ATE0", 2_000)
+        transport.transact("ATL0", 2_000)
+        transport.transact("ATS0", 2_000)
+        transport.transact("ATH1", 2_000)
+        transport.transact("ATSP0", 3_000)
+
+        // Prove we can actually talk to the car, not just to the adapter.
+        val ident = transport.transact("ATI", 3_000)
+        if (!ident.isNullOrBlank()) anyAnswer = true
+        val probe = transport.transact("0100", 4_000)
+        if (!probe.isNullOrBlank()) anyAnswer = true
+
+        if (!anyAnswer) {
+            open = false
+            return false
+        }
         return true
     }
 
     fun isConnected(): Boolean = open
 
-    /** Where a BLE setup got stuck (empty for Classic). Shown in the error. */
-    fun transportStage(): String = (transport as? BleTransport)?.stage.orEmpty()
+    /** Where setup got stuck (empty unless a BLE link failed). Shown in the error. */
+    fun transportStage(): String {
+        val ble = transport as? BleTransport ?: return ""
+        return ble.stage
+    }
+
+    /** Setup trail for the in-app adapter log. */
+    fun transcript(): List<String> = transport.transcript()
 
     /** Read one PID. Returns decoded value or null (unsupported / timeout). */
     fun readPid(def: PidDef): Float? {
         if (!open) return null
         setHeader(def.header)
-        val raw = transport.transact(TacomaPids.command(def), 2_000) ?: return null
+        val raw = transport.transact(TacomaPids.command(def), 2_500) ?: return null
         val bytes = parseResponse(TacomaPids.command(def), raw) ?: return null
         return TacomaPids.decode(def, bytes)
     }
 
     fun readVoltage(): Float? {
-        val raw = transport.transact("ATRV", 1_500) ?: return null
+        val raw = transport.transact("ATRV", 2_000) ?: return null
         // Clone replies look like "12.6V". Be lenient.
         val m = Regex("""(\d{1,2}\.\d)""").find(raw.replace("V", ""))
         return m?.groupValues?.get(1)?.toFloatOrNull()

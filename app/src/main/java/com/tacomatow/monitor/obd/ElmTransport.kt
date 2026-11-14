@@ -28,6 +28,9 @@ interface ElmTransport {
     fun open(): Boolean
     fun transact(cmd: String, timeoutMs: Int): String?
     fun close()
+
+    /** Human-readable setup trail, newest last. Shown in the app for support. */
+    fun transcript(): List<String>
 }
 
 /** Bluetooth Classic (SPP) transport. */
@@ -43,19 +46,28 @@ class SppTransport(
     private var socket: BluetoothSocket? = null
     private var input: InputStream? = null
     private var output: OutputStream? = null
+    private val log = mutableListOf<String>()
+
+    override fun transcript(): List<String> = synchronized(log) { log.toList() }
+
+    private fun note(s: String) = synchronized(log) { if (log.size < 60) log.add(s) }
 
     @SuppressLint("MissingPermission")
     override fun open(): Boolean {
         close()
+        log.clear()
         return try {
+            note("classic: opening RFCOMM to ${device.address}")
             val sock = device.createRfcommSocketToServiceRecord(SPP_UUID)
             adapter.cancelDiscovery()
             sock.connect()
             socket = sock
             input = sock.inputStream
             output = sock.outputStream
+            note("classic: socket up")
             true
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            note("classic: connect failed (${e.javaClass.simpleName})")
             close()
             false
         }
@@ -107,9 +119,13 @@ class SppTransport(
 }
 
 /**
- * Bluetooth LE (GATT) transport for "odbBLE"-style dongles.
- * Probes the Nordic UART service, then the TI/HM-10 FFE0 service, then any
- * service exposing a write + notify characteristic pair.
+ * Bluetooth LE (GATT) transport for "odbble"-style dongles.
+ *
+ * Choosing the right characteristic pair matters more than anything else:
+ * cheap clones expose several writable/notifying characteristics (battery,
+ * device info, DFU) and writing OBD text to the wrong one silently does
+ * nothing. So we PROBE each candidate pair with a live `AT` command and keep
+ * the first one that actually answers.
  */
 @SuppressLint("MissingPermission")
 class BleTransport(
@@ -126,10 +142,18 @@ class BleTransport(
         val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805F9B34FB")
     }
 
+    private data class Pair2(
+        val write: BluetoothGattCharacteristic,
+        val notify: BluetoothGattCharacteristic,
+        val label: String,
+    )
+
     private var gatt: BluetoothGatt? = null
     private var writeChar: BluetoothGattCharacteristic? = null
     private var mtu = 23
     private val rx = LinkedBlockingQueue<Byte>()
+    private val log = mutableListOf<String>()
+
     /** Updated at each setup step so failures can say WHERE they stuck. */
     @Volatile var stage = "starting"
         private set
@@ -140,9 +164,14 @@ class BleTransport(
     @Volatile private var linkUp = false
     @Volatile private var subscribed = false
 
+    override fun transcript(): List<String> = synchronized(log) { log.toList() }
+
+    private fun note(s: String) = synchronized(log) { if (log.size < 60) log.add(s) }
+
     private val callback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             linkUp = newState == BluetoothProfile.STATE_CONNECTED
+            note("link state=$newState status=$status")
             connLatch.countDown()
             if (!linkUp) {
                 try { g.close() } catch (_: Exception) {}
@@ -151,9 +180,11 @@ class BleTransport(
 
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS) this@BleTransport.mtu = mtu
+            note("mtu=$mtu status=$status")
         }
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+            note("discovery status=$status")
             svcLatch.countDown()
         }
 
@@ -165,90 +196,111 @@ class BleTransport(
             c.value?.forEach { rx.add(it) }
         }
 
-        override fun onDescriptorWrite(g: BluetoothGatt, d: android.bluetooth.BluetoothGattDescriptor, status: Int) {
+        override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, status: Int) {
             subscribed = status == BluetoothGatt.GATT_SUCCESS
+            note("cccd write status=$status")
             descLatch.countDown()
         }
     }
 
     override fun open(): Boolean {
         close()
+        log.clear()
         connLatch = CountDownLatch(1)
         svcLatch = CountDownLatch(1)
         return try {
             stage = "gatt-connect"
+            note("ble: connecting to ${device.address}")
             gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
                 ?: return false
             stage = "waiting-link"
-            if (!connLatch.await(12, TimeUnit.SECONDS) || !linkUp) {
+            if (!connLatch.await(15, TimeUnit.SECONDS) || !linkUp) {
                 stage = "link-timeout"
+                note("ble: never reached connected state")
                 close()
                 return false
             }
             val g = gatt ?: return false
             stage = "mtu-negotiation"
             try { g.requestMtu(247) } catch (_: Exception) {}
-            Thread.sleep(400)
+            Thread.sleep(500)
             stage = "service-discovery"
             if (!g.discoverServices()) {
+                note("ble: discoverServices() refused")
                 close()
                 return false
             }
             stage = "waiting-services"
-            if (!svcLatch.await(8, TimeUnit.SECONDS)) {
+            if (!svcLatch.await(10, TimeUnit.SECONDS)) {
+                note("ble: discovery timed out")
                 close()
                 return false
             }
-            stage = "probing-uart"
-            if (!pickCharacteristics(g)) {
+            val candidates = collectCandidates(g)
+            note("ble: ${candidates.size} candidate UART pair(s)")
+            if (candidates.isEmpty()) {
                 stage = "no-uart-characteristic"
                 close()
                 return false
             }
-            // Give the first notify a moment to arm before ATZ.
-            Thread.sleep(300)
-            stage = "ready"
-            true
-        } catch (_: Exception) {
+            // Probe each pair with a real AT command; keep the first that replies.
+            stage = "probing-uart"
+            for ((idx, cand) in candidates.withIndex()) {
+                note("ble: probing #$idx ${cand.label}")
+                if (!subscribe(g, cand.notify)) {
+                    note("ble: #$idx notify subscribe failed")
+                    continue
+                }
+                writeChar = cand.write
+                Thread.sleep(250)
+                val probe = transact("AT", 2_500)
+                note("ble: #$idx probe -> ${probe?.take(40) ?: "<silence>"}")
+                if (probe != null && probe.isNotEmpty()) {
+                    stage = "ready"
+                    note("ble: using ${cand.label}")
+                    return true
+                }
+            }
+            stage = "no-answer-on-probe"
+            close()
+            false
+        } catch (e: Exception) {
             stage = "exception"
+            note("ble: ${e.javaClass.simpleName}: ${e.message}")
             close()
             false
         }
     }
 
-    private fun pickCharacteristics(g: BluetoothGatt): Boolean {
-        // 1) Nordic UART split TX/RX.
+    /** Ordered candidates: NUS, FFE0, then any write+notify pair in any service. */
+    private fun collectCandidates(g: BluetoothGatt): List<Pair2> {
+        val out = mutableListOf<Pair2>()
         g.getService(NUS_SERVICE)?.let { svc ->
             val tx = svc.getCharacteristic(NUS_TX)
             val rxChar = svc.getCharacteristic(NUS_RX)
             if (tx != null && rxChar != null && canWrite(tx) && canNotify(rxChar)) {
-                writeChar = tx
-                if (subscribe(g, rxChar)) return true
+                out += Pair2(tx, rxChar, "NUS (6E400001)")
             }
         }
-        // 2) HM-10 / TI single FFE1 characteristic.
         g.getService(FFE_SERVICE)?.let { svc ->
             svc.getCharacteristic(FFE_CHAR)?.let { ch ->
-                if (canWrite(ch) && canNotify(ch)) {
-                    writeChar = ch
-                    if (subscribe(g, ch)) return true
+                if (canWrite(ch) && canNotify(ch)) out += Pair2(ch, ch, "FFE1 (HM-10)")
+            }
+        }
+        for (svc in g.services) {
+            val writes = svc.characteristics.filter { canWrite(it) }
+            val notifies = svc.characteristics.filter { canNotify(it) }
+            for (w in writes) {
+                for (n in notifies) {
+                    // Characteristic shape varies wildly; try same-char, then cross.
+                    val label = "${svc.uuid.toString().take(8)} w=${w.uuid.toString().take(8)} n=${n.uuid.toString().take(8)}"
+                    if (out.none { it.write.uuid == w.uuid && it.notify.uuid == n.uuid }) {
+                        out += Pair2(w, n, label)
+                    }
                 }
             }
         }
-        // 3) Anything with a write + notify pair.
-        for (svc in g.services) {
-            var w: BluetoothGattCharacteristic? = null
-            var n: BluetoothGattCharacteristic? = null
-            for (ch in svc.characteristics) {
-                if (w == null && canWrite(ch)) w = ch
-                if (n == null && canNotify(ch)) n = ch
-            }
-            if (w != null && n != null) {
-                writeChar = w
-                if (subscribe(g, n)) return true
-            }
-        }
-        return false
+        return out
     }
 
     private fun canWrite(c: BluetoothGattCharacteristic): Boolean {
@@ -266,7 +318,6 @@ class BleTransport(
     @Suppress("DEPRECATION")
     private fun subscribe(g: BluetoothGatt, notifyChar: BluetoothGattCharacteristic): Boolean {
         return try {
-            stage = "subscribing"
             if (!g.setCharacteristicNotification(notifyChar, true)) return false
             val cccd = notifyChar.getDescriptor(CCCD)
             if (cccd == null) {
@@ -304,16 +355,25 @@ class BleTransport(
             var off = 0
             while (off < payload.size) {
                 val end = minOf(off + chunk, payload.size)
-                w.value = payload.copyOfRange(off, end)
-                w.writeType = if (noAck) BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                else BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-                if (!g.writeCharacteristic(w)) {
+                val piece = payload.copyOfRange(off, end)
+                val ok = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    g.writeCharacteristic(
+                        w,
+                        piece,
+                        if (noAck) BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                        else BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+                    ) == BluetoothGatt.GATT_SUCCESS
+                } else {
+                    w.value = piece
+                    w.writeType = if (noAck) BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                    else BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                    g.writeCharacteristic(w)
+                }
+                if (!ok) {
                     stage = "write-refused"
                     return null
                 }
-                // WRITE_TYPE_DEFAULT waits for the dongle's ACK internally;
-                // a breath between chunks keeps cheap clones happy.
-                Thread.sleep(40)
+                if (!noAck) Thread.sleep(40) // small gap keeps cheap clones happy
                 off = end
             }
             val sb = StringBuilder()
@@ -323,6 +383,7 @@ class BleTransport(
                 if (b == PROMPT) return sb.toString().uppercase()
                 sb.append(b.toInt().toChar())
             }
+            if (sb.isNotEmpty()) return sb.toString().uppercase()
             null
         } catch (_: Exception) {
             null
