@@ -292,6 +292,11 @@ class MainActivity : ComponentActivity() {
                 Spacer(Modifier.height(14.dp))
                 GaugeCluster(state, onDemo = { ObdHolder.repository.startDemo() })
 
+                if (state.refusals.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    RefusalCard(state.refusals)
+                }
+
                 Spacer(Modifier.height(14.dp))
                 ActionRow(state)
 
@@ -886,6 +891,46 @@ class MainActivity : ComponentActivity() {
                 )
                 Text(
                     state.voltage?.let { "Adapter %.1f V".format(it) } ?: "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+
+    /**
+     * The truck answered "7F" — it refused the identifier. Worth saying out
+     * loud: an empty gauge reads as "the app is broken", while 7F 22 31 is
+     * proof the request arrived and the calibration simply has no such data.
+     */
+    @Composable
+    private fun RefusalCard(refusals: List<String>) {
+        val palette = LocalTowPalette.current
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            modifier = Modifier.fillMaxWidth(),
+            border = androidx.compose.foundation.BorderStroke(1.dp, palette.idle),
+        ) {
+            Column(Modifier.padding(14.dp)) {
+                Text(
+                    "REFUSED BY THE ECU",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = palette.idle,
+                )
+                Spacer(Modifier.height(6.dp))
+                refusals.forEach { line ->
+                    Text(
+                        line,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontFamily = FontFamily.Monospace,
+                        ),
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "A 7F reply is an answer, not silence: your request reached the ECU and it " +
+                        "said this identifier isn't supported. Another adapter will get the same " +
+                        "reply, so this is the one case where new hardware cannot help.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

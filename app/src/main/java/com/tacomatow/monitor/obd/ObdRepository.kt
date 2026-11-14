@@ -43,6 +43,12 @@ data class ObdUiState(
     val diagnostics: List<String> = emptyList(),
     /** True once a session got far enough to have an adapter trail worth showing. */
     val triedConnect: Boolean = false,
+    /**
+     * PIDs the ECU explicitly refused, e.g. "Trans Pan — 7F 22 31". A refusal
+     * is evidence (the truck has no such identifier), so it is shown rather
+     * than silently leaving an empty gauge card.
+     */
+    val refusals: List<String> = emptyList(),
 )
 
 /**
@@ -74,7 +80,13 @@ class ObdRepository(
     fun startDemo() {
         stopPoll()
         _state.update {
-            it.copy(connected = true, demoMode = true, deviceName = "Demo — no adapter", error = null)
+            it.copy(
+                connected = true,
+                demoMode = true,
+                deviceName = "Demo — no adapter",
+                error = null,
+                refusals = emptyList(),
+            )
         }
         pollJob = scope.launch {
             var t = 0.0
@@ -201,6 +213,8 @@ class ObdRepository(
                     deviceName = "$label (${if (winnerKind == "ble") "BLE" else "classic"})",
                     triedConnect = true,
                     diagnostics = trail,
+                    // Fresh session, fresh evidence.
+                    refusals = emptyList(),
                 )
             }
             withContext(Dispatchers.Main) { onDone(true, null) }
@@ -419,6 +433,7 @@ class ObdRepository(
             // Without this, three dead PIDs cost ~20s per sweep and starve the
             // ones that do work (speed and coolant went blank because of it).
             val parkedUntil = mutableMapOf<String, Long>()
+            val refusalMap = mutableMapOf<String, String>()
             while (isActive && c.isConnected()) {
                 val out = mutableMapOf<String, GaugeReading>()
                 // Transmission definitions are whatever detection found.
@@ -435,6 +450,15 @@ class ObdRepository(
                         }
                     }
                     val v = attempt.value
+                    attempt.refusal?.let { neg ->
+                        val label = if (def.id == "trans_pan") "Trans Pan"
+                        else if (def.id == "trans_conv") "T-Conv Out"
+                        else def.label
+                        refusalMap[def.id] = "$label — $neg"
+                        // A refusal is a property of the calibration: it will
+                        // not change on the next sweep, so stop spending time on it.
+                        parkedUntil[def.id] = now0 + 600_000
+                    }
                     if (v == null && attempt.definitiveMiss) {
                         val n = (misses[def.id] ?: 0) + 1
                         misses[def.id] = n
@@ -458,7 +482,12 @@ class ObdRepository(
                     try { c.readVoltage() } catch (_: Exception) { null }
                 }
                 _state.update {
-                    it.copy(readings = out, voltage = volts, lastUpdateMs = System.currentTimeMillis())
+                    it.copy(
+                        readings = out,
+                        voltage = volts,
+                        lastUpdateMs = System.currentTimeMillis(),
+                        refusals = refusalMap.values.toList(),
+                    )
                 }
                 appendLog(out, volts)
                 delay(800)
@@ -493,7 +522,9 @@ class ObdRepository(
         stopPoll()
         try { client?.close() } catch (_: Exception) {}
         client = null
-        _state.update { it.copy(connected = false, demoMode = false, readings = emptyMap()) }
+        _state.update {
+            it.copy(connected = false, demoMode = false, readings = emptyMap(), refusals = emptyList())
+        }
     }
 
     private fun stopPoll() {

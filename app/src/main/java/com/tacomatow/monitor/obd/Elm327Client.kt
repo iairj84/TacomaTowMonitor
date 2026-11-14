@@ -86,7 +86,12 @@ class Elm327Client(
      * data" — retrying is pointless and expensive, so callers can back off
      * instead of burning seconds on a PID this vehicle does not publish.
      */
-    data class PidAttempt(val value: Float?, val definitiveMiss: Boolean)
+    data class PidAttempt(
+        val value: Float?,
+        val definitiveMiss: Boolean,
+        /** e.g. "7F 22 31" — the ECU answered and refused. Distinct from silence. */
+        val refusal: String? = null,
+    )
 
     /**
      * Read one PID. Retried once on a *silent* miss: BLE clones drop the
@@ -104,6 +109,8 @@ class Elm327Client(
                 val bytes = parseResponse(cmd, raw)
                 val value = bytes?.let { TacomaPids.decode(def, it) }
                 if (value != null) return PidAttempt(value, false)
+                val refused = negativeResponse(raw)
+                if (refused != null) return PidAttempt(null, true, refused)
                 if (noData) return PidAttempt(null, true)
             }
             if (attempt == 0) Thread.sleep(120)
@@ -112,6 +119,22 @@ class Elm327Client(
     }
 
     fun readPid(def: PidDef): Float? = readPidAttempt(def).value
+
+    /**
+     * Recognises a negative response ("7F <service> <code>") anywhere in a
+     * reply. This is the single most useful distinction in OBD debugging: a
+     * refusal proves the request arrived, whereas NO DATA only proves the
+     * adapter gave up.
+     */
+    fun negativeResponse(raw: String): String? {
+        val tokens = raw.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        for (i in tokens.indices) {
+            if (tokens[i].equals("7F", ignoreCase = true) && i + 2 < tokens.size) {
+                return "7F ${tokens[i + 1].uppercase()} ${tokens[i + 2].uppercase()}"
+            }
+        }
+        return null
+    }
 
     /**
      * Enter the extended diagnostic session (10 03). Toyota ECUs and the
