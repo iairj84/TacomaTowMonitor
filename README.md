@@ -134,3 +134,50 @@ The adapter log card has **Copy** and **Share** buttons. Both produce the same
 text: app version and build, phone model and Android version, adapter name and
 connection state, protocol, adapter voltage, then the log lines verbatim. A bare
 `NO DATA` line is useless without that header, so the context travels with it.
+
+## Contributing
+
+**A bug report is only as good as its log.** Tap **Share** on the adapter log card
+and paste the result. Raw replies (`NO DATA`, `7F 22 31`, `SEARCHING...`) are
+the difference between a diagnosis and a guess — see "The PIDs" above for why.
+
+**Welcome:**
+
+- **PID definitions for other years and engines.** Include the model year, cab
+  and engine, the request, the raw reply, and the temperature it should have
+  shown on a known-cold or known-hot transmission. A PID that "works" without a
+  reference reading is not verified.
+- **Adapter quirks.** If a dongle needed a different init order, a different
+  write characteristic, or a protocol it refused, that is genuinely useful —
+  this project exists because the descriptor tables and the marketing copy lie.
+- **Parser fixes** where a documented formula and a real reply disagree.
+
+**Deliberately out of scope: customization writes.** `CustomizeActivity` reads
+C-BEST blocks and never writes. That is a design decision, not a gap waiting to
+be filled: a wrong write to a body ECU can leave a truck with dead locks, no
+chime and no documented undo, and reverse-engineering the right payloads needs
+a vehicle to brick. Pull requests that add writes will be declined.
+
+**Ground rules:**
+
+- Say what you tested on. "Compiles" and "worked on my 2019 TRD Off-Road with a
+  Kiwi 3" are different claims; only claim the second when it happened.
+- No new dependency for something the platform already does — this app is
+  `HttpURLConnection` and `org.json` on purpose, so a sideloaded build has no
+  supply chain to trust.
+- Keep feature PRs small and single-purpose. Refactors bundled into features
+  will be asked to split.
+
+**Build:** `./gradlew assembleDebug`. Debug builds carry a `.debug` application
+id suffix, so they install alongside a release build without clobbering it.
+
+## License
+
+MIT — see [LICENSE](LICENSE). Do what you like with it, keep the notice.
+
+Bundled libraries are AndroidX/Compose and the Car App Library, all Apache-2.0.
+
+This project is not affiliated with Toyota, Elm Electronics or any adapter
+vendor. It reads standard and manufacturer diagnostic data and never writes
+vehicle configuration. Use at your own risk: no warranty, and no promise that a
+PID decodes correctly on your truck.
