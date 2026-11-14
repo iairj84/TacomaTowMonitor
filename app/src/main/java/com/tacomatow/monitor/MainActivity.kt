@@ -23,7 +23,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -48,7 +50,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -60,6 +64,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -117,14 +122,52 @@ class MainActivity : ComponentActivity() {
         if (missing.isNotEmpty()) btPermissionLauncher.launch(missing.toTypedArray())
     }
 
+    /** Remembered adapter so the app can reconnect without a picker. */
+    private val prefs by lazy { getSharedPreferences("tacoma", MODE_PRIVATE) }
+
+    private fun rememberDevice(device: BluetoothDevice) {
+        prefs.edit()
+            .putString("last_mac", device.address)
+            .putString("last_name", device.name ?: device.address)
+            .apply()
+    }
+
     @SuppressLint("MissingPermission")
     @Composable
     private fun TowHome(dark: Boolean, onToggleTheme: () -> Unit) {
         val state by ObdHolder.repository.state.collectAsState()
         var showPicker by remember { mutableStateOf(false) }
         var connectMsg by remember { mutableStateOf<String?>(null) }
+        val lastMac = remember { prefs.getString("last_mac", null) }
+        val lastName = remember { prefs.getString("last_name", null) }
+        var autoTried by remember { mutableStateOf(false) }
+        val context = LocalContext.current
 
-        Column(Modifier.fillMaxSize()) {
+        // Auto-reconnect to the dongle used last time, once, on launch.
+        LaunchedEffect(lastMac) {
+            val mac = lastMac ?: return@LaunchedEffect
+            if (autoTried || state.connected || state.demoMode) return@LaunchedEffect
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT)
+                != PackageManager.PERMISSION_GRANTED
+            ) return@LaunchedEffect
+            autoTried = true
+            val adapter = getSystemService(BluetoothManager::class.java)?.adapter
+                ?: return@LaunchedEffect
+            val device = try {
+                adapter.getRemoteDevice(mac)
+            } catch (_: IllegalArgumentException) {
+                null
+            } ?: return@LaunchedEffect
+            ObdHolder.repository.connectAny(this@MainActivity, adapter, device) { ok, why ->
+                connectMsg = if (ok) null else why
+            }
+        }
+
+        Column(
+            Modifier
+                .fillMaxSize()
+                .statusBarsPadding(),
+        ) {
             Header(dark = dark, onToggleTheme = onToggleTheme)
 
             Column(
@@ -135,7 +178,27 @@ class MainActivity : ComponentActivity() {
             ) {
                 ConnectionPanel(
                     state = state,
+                    lastName = lastName,
                     onConnect = { showPicker = true },
+                    onReconnect = {
+                        val mac = lastMac ?: return@ConnectionPanel
+                        val adapter = getSystemService(BluetoothManager::class.java)?.adapter
+                        if (adapter == null) {
+                            connectMsg = "No Bluetooth adapter on this phone."
+                            return@ConnectionPanel
+                        }
+                        val device = try {
+                            adapter.getRemoteDevice(mac)
+                        } catch (_: IllegalArgumentException) { null }
+                        if (device == null) {
+                            connectMsg = "Saved adapter is no longer available — pick another."
+                            showPicker = true
+                            return@ConnectionPanel
+                        }
+                        ObdHolder.repository.connectAny(this@MainActivity, adapter, device) { ok, why ->
+                            connectMsg = if (ok) null else why
+                        }
+                    },
                     onDemo = { ObdHolder.repository.startDemo() },
                     onDisconnect = { ObdHolder.repository.disconnect() },
                 )
@@ -146,7 +209,7 @@ class MainActivity : ComponentActivity() {
                 }
 
                 Spacer(Modifier.height(14.dp))
-                GaugeCluster(state)
+                GaugeCluster(state, onDemo = { ObdHolder.repository.startDemo() })
 
                 Spacer(Modifier.height(14.dp))
                 ActionRow(state)
@@ -172,7 +235,7 @@ class MainActivity : ComponentActivity() {
                     AdapterLog(state.diagnostics)
                 }
 
-                Spacer(Modifier.height(28.dp))
+                Spacer(Modifier.height(28.dp).navigationBarsPadding())
             }
         }
 
@@ -188,6 +251,7 @@ class MainActivity : ComponentActivity() {
                     }
                     val done: (Boolean, String?) -> Unit = { ok, why ->
                         connectMsg = if (ok) null else (why ?: "Connect failed")
+                        if (ok) rememberDevice(device)
                     }
                     ObdHolder.repository.connectAny(this@MainActivity, adapter, device, done)
                 },
@@ -229,7 +293,9 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun ConnectionPanel(
         state: ObdUiState,
+        lastName: String?,
         onConnect: () -> Unit,
+        onReconnect: () -> Unit,
         onDemo: () -> Unit,
         onDisconnect: () -> Unit,
     ) {
@@ -261,6 +327,7 @@ class MainActivity : ComponentActivity() {
                         when {
                             state.demoMode -> "Demo data — no dongle attached"
                             state.connected -> "Live from the ELM327"
+                            lastName != null -> "Last used: $lastName"
                             else -> "2019 Tacoma V6 · 3.5L"
                         },
                         style = MaterialTheme.typography.bodySmall,
@@ -269,6 +336,10 @@ class MainActivity : ComponentActivity() {
                 }
                 if (state.connected) {
                     OutlinedButton(onClick = onDisconnect) { Text("Disconnect") }
+                } else if (lastName != null) {
+                    Button(onClick = onReconnect) { Text("Reconnect") }
+                    Spacer(Modifier.size(8.dp))
+                    OutlinedButton(onClick = onConnect) { Text("Change") }
                 } else {
                     Button(onClick = onConnect) { Text("Connect") }
                     Spacer(Modifier.size(8.dp))
@@ -488,7 +559,7 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun GaugeCluster(state: ObdUiState) {
+    private fun GaugeCluster(state: ObdUiState, onDemo: () -> Unit) {
         if (!state.connected) {
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -502,10 +573,12 @@ class MainActivity : ComponentActivity() {
                     Spacer(Modifier.height(6.dp))
                     Text(
                         "Connect your ELM327 with the ignition on. Paired classic dongles appear first; " +
-                            "BLE ones like odbble are found by scanning. Demo shows the layout with sample data.",
+                            "BLE ones like odbble are found by scanning.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    Spacer(Modifier.height(4.dp))
+                    TextButton(onClick = onDemo) { Text("Preview with demo data") }
                 }
             }
             return
@@ -657,7 +730,7 @@ class MainActivity : ComponentActivity() {
         }
 
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            Column(Modifier.fillMaxSize()) {
+            Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
                 Row(
                     Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 14.dp, bottom = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
