@@ -353,6 +353,44 @@ class ObdRepository(
         }
     }
 
+    /**
+     * Walks the bounded mode 22 set at the transmission ECU and classifies each
+     * identifier: data, refused (7F) or silence. Read-only.
+     */
+    suspend fun sweepDids(onProgress: (done: Int, total: Int, did: String) -> Unit): List<DidProbe> {
+        val c = client ?: return emptyList()
+        val dids = DidSweep.dids()
+        return withContext(Dispatchers.IO) {
+            try { c.enterExtendedSession() } catch (_: Exception) { }
+            val out = mutableListOf<DidProbe>()
+            dids.forEachIndexed { index, did ->
+                val cmd = "22$did"
+                val raw = try {
+                    c.readRaw(DidSweep.HEADER, cmd, 1_200)
+                } catch (_: Exception) {
+                    null
+                }
+                val bytes = raw?.let { c.payloadFor(cmd, it) }
+                val refusal = raw?.let { c.negativeResponse(it) }
+                val verdict = when {
+                    bytes != null -> DidVerdict.DATA
+                    refusal != null -> DidVerdict.REFUSED
+                    else -> DidVerdict.SILENT
+                }
+                out += DidProbe(
+                    did = did,
+                    raw = raw,
+                    verdict = verdict,
+                    payloadHex = bytes?.let { CustomizeExplorer.hex(it) },
+                    refusal = refusal,
+                )
+                withContext(Dispatchers.Main) { onProgress(index + 1, dids.size, did) }
+                delay(60)
+            }
+            out
+        }
+    }
+
     /** Raw command for the diagnostics console. Read-only by nature of what the UI sends. */
     suspend fun sendRaw(header: String?, command: String): String? {
         val c = client ?: return null

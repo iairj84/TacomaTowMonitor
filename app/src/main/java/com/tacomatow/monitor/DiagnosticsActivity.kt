@@ -41,6 +41,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
+import com.tacomatow.monitor.obd.DidProbe
+import com.tacomatow.monitor.obd.DidSweep
+import com.tacomatow.monitor.obd.DidVerdict
 import com.tacomatow.monitor.obd.ObdHolder
 import com.tacomatow.monitor.ui.TacomaTheme
 import kotlinx.coroutines.launch
@@ -221,7 +225,120 @@ private fun DiagnosticsScreen(onBack: () -> Unit) {
                 }
             }
 
+            Spacer(Modifier.height(12.dp))
+            DidSweepCard()
+
             Spacer(Modifier.height(24.dp).navigationBarsPadding())
+        }
+    }
+}
+
+/**
+ * Sweeps a bounded set of mode 22 identifiers and reports what each one did.
+ * Turns "trans temp doesn't work" into a list of identifiers that the truck
+ * actually answers.
+ */
+@Composable
+private fun DidSweepCard() {
+    val state by ObdHolder.repository.state.collectAsState()
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    var sweeping by remember { mutableStateOf(false) }
+    var progress by remember { mutableStateOf("") }
+    var probes by remember { mutableStateOf(listOf<DidProbe>()) }
+    val total = remember { DidSweep.dids().size }
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text("Capability sweep", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Probes $total mode 22 identifiers at header 0x701 and records which answer. " +
+                    "Read-only, and takes about a minute.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = {
+                        sweeping = true
+                        probes = emptyList()
+                        progress = "Starting…"
+                        scope.launch {
+                            probes = ObdHolder.repository.sweepDids { done, all, did ->
+                                progress = "0x$did · $done/$all"
+                            }
+                            sweeping = false
+                        }
+                    },
+                    enabled = state.connected && !sweeping,
+                ) { Text(if (sweeping) "Sweeping…" else "Start sweep") }
+
+                if (probes.isNotEmpty()) {
+                    TextButton(
+                        onClick = { AdapterLogShare.share(context, DidSweep.describe(probes)) },
+                    ) { Text("Share results") }
+                }
+            }
+
+            if (sweeping) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    progress,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            if (probes.isNotEmpty()) {
+                val data = probes.count { it.verdict == DidVerdict.DATA }
+                val refused = probes.count { it.verdict == DidVerdict.REFUSED }
+                val silent = probes.count { it.verdict == DidVerdict.SILENT }
+
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "data $data · refused $refused · silent $silent",
+                    style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
+                )
+                Spacer(Modifier.height(6.dp))
+
+                probes.filter { it.verdict != DidVerdict.SILENT }.forEach { p ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(
+                            "22${p.did}",
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        )
+                        Text(
+                            if (p.verdict == DidVerdict.DATA) (p.payloadHex ?: "data")
+                            else (p.refusal ?: "refused"),
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    when {
+                        data > 0 ->
+                            "Your adapter does carry manufacturer data — at least these identifiers " +
+                                "answered. Anything missing is absent from the calibration, not the dongle."
+                        refused > 0 ->
+                            "The ECU answered and refused, which proves the whole path works: request " +
+                                "format, adapter and addressing are all fine. These identifiers simply " +
+                                "aren't published on this truck."
+                        else ->
+                            "Nothing came back at all. That is the adapter-limit signature: it accepts " +
+                                "the session but cannot carry manufacturer replies."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }
