@@ -10,6 +10,7 @@ import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothSocket
 import android.content.Context
+import android.os.Build
 import java.io.InputStream
 import java.io.OutputStream
 import java.util.UUID
@@ -129,6 +130,9 @@ class BleTransport(
     private var writeChar: BluetoothGattCharacteristic? = null
     private var mtu = 23
     private val rx = LinkedBlockingQueue<Byte>()
+    /** Updated at each setup step so failures can say WHERE they stuck. */
+    @Volatile var stage = "starting"
+        private set
 
     private var connLatch = CountDownLatch(1)
     private var svcLatch = CountDownLatch(1)
@@ -172,31 +176,41 @@ class BleTransport(
         connLatch = CountDownLatch(1)
         svcLatch = CountDownLatch(1)
         return try {
+            stage = "gatt-connect"
             gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
                 ?: return false
+            stage = "waiting-link"
             if (!connLatch.await(12, TimeUnit.SECONDS) || !linkUp) {
+                stage = "link-timeout"
                 close()
                 return false
             }
             val g = gatt ?: return false
+            stage = "mtu-negotiation"
             try { g.requestMtu(247) } catch (_: Exception) {}
             Thread.sleep(400)
+            stage = "service-discovery"
             if (!g.discoverServices()) {
                 close()
                 return false
             }
+            stage = "waiting-services"
             if (!svcLatch.await(8, TimeUnit.SECONDS)) {
                 close()
                 return false
             }
+            stage = "probing-uart"
             if (!pickCharacteristics(g)) {
+                stage = "no-uart-characteristic"
                 close()
                 return false
             }
             // Give the first notify a moment to arm before ATZ.
             Thread.sleep(300)
+            stage = "ready"
             true
         } catch (_: Exception) {
+            stage = "exception"
             close()
             false
         }
@@ -252,6 +266,7 @@ class BleTransport(
     @Suppress("DEPRECATION")
     private fun subscribe(g: BluetoothGatt, notifyChar: BluetoothGattCharacteristic): Boolean {
         return try {
+            stage = "subscribing"
             if (!g.setCharacteristicNotification(notifyChar, true)) return false
             val cccd = notifyChar.getDescriptor(CCCD)
             if (cccd == null) {
@@ -260,8 +275,13 @@ class BleTransport(
             }
             descLatch = CountDownLatch(1)
             subscribed = false
-            cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-            if (!g.writeDescriptor(cccd)) return false
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val rc = g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                if (rc != BluetoothGatt.GATT_SUCCESS) return false
+            } else {
+                cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                if (!g.writeDescriptor(cccd)) return false
+            }
             descLatch.await(5, TimeUnit.SECONDS)
             subscribed
         } catch (_: Exception) {
@@ -278,12 +298,19 @@ class BleTransport(
         return try {
             val payload = (cmd + "\r").toByteArray()
             val chunk = (mtu - 3).coerceAtLeast(20)
+            // Honor what the clone actually supports: many BLE ELMs expose
+            // WRITE_NO_RESPONSE only, and a DEFAULT write is refused outright.
+            val noAck = (w.properties and BluetoothGattCharacteristic.PROPERTY_WRITE) == 0
             var off = 0
             while (off < payload.size) {
                 val end = minOf(off + chunk, payload.size)
                 w.value = payload.copyOfRange(off, end)
-                w.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-                if (!g.writeCharacteristic(w)) return null
+                w.writeType = if (noAck) BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                else BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                if (!g.writeCharacteristic(w)) {
+                    stage = "write-refused"
+                    return null
+                }
                 // WRITE_TYPE_DEFAULT waits for the dongle's ACK internally;
                 // a breath between chunks keeps cheap clones happy.
                 Thread.sleep(40)

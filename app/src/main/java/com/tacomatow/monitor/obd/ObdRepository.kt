@@ -128,7 +128,9 @@ class ObdRepository(
             }
             if (!ok) {
                 c.close()
-                _state.update { it.copy(connected = false, error = "Couldn't talk to the ELM327. Classic dongles must be paired first; BLE ones (odbble) connect straight from scan. Ignition ON either way.") }
+                val detail = c.transportStage().takeIf { it.isNotEmpty() && it != "ready" }
+                ?.let { " (stuck at: $it)" }.orEmpty()
+                _state.update { it.copy(connected = false, error = "Couldn't talk to the ELM327$detail. Classic dongles must be paired first; BLE ones (odbble) connect straight from scan. Ignition ON either way.") }
                 withContext(Dispatchers.Main) { onDone(false, "ELM init failed") }
                 return@launch
             }

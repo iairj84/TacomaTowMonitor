@@ -248,57 +248,67 @@ class MainActivity : ComponentActivity() {
             try { adapter?.bluetoothLeScanner?.stopScan(scanCallback) } catch (_: Exception) {}
             scanning = false
         }
+        // ONE scrollable list: two LazyColumns in a Column starve each other
+        // of height, which is what made the old picker wonky.
         Column(Modifier.fillMaxSize().padding(24.dp)) {
             Text("Pick your ELM327", style = MaterialTheme.typography.headlineSmall)
             Spacer(Modifier.height(8.dp))
-            Text("Classic (OBDII / ELM327 / VGate) — pair in system Bluetooth first (PIN 0000 or 1234), then pick below.",
-                style = MaterialTheme.typography.bodySmall)
-            Spacer(Modifier.height(8.dp))
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(bonded) { d ->
-                    Card(onClick = { stopScan(); onPick(d, false) }) {
-                        Text("${d.name ?: "(no name)"}\n${d.address}", Modifier.padding(12.dp))
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                item {
+                    Text("Classic (OBDII / ELM327 / VGate) — pair in system Bluetooth first (PIN 0000 or 1234), then pick below.",
+                        style = MaterialTheme.typography.bodySmall)
+                }
+                if (bonded.isEmpty()) {
+                    item { Text("No paired classic devices.", style = MaterialTheme.typography.bodySmall) }
+                } else {
+                    items(bonded) { d ->
+                        Card(onClick = { stopScan(); onPick(d, false) }) {
+                            Text("${d.name ?: "(no name)"}\n${d.address}", Modifier.padding(12.dp))
+                        }
                     }
                 }
-            }
-            if (bonded.isEmpty()) Text("No paired classic devices.", style = MaterialTheme.typography.bodySmall)
-            Spacer(Modifier.height(12.dp))
-            Text("BLE adapters (odbble and friends need NO pairing — just scan and tap).",
-                style = MaterialTheme.typography.bodySmall)
-            Spacer(Modifier.height(4.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = {
-                        bleHits = emptyList()
-                        scanMsg = null
-                        try {
-                            val s = adapter?.bluetoothLeScanner
-                            if (s == null) {
-                                scanMsg = "No BLE scanner — is Bluetooth on?"
-                            } else {
-                                s.startScan(
-                                    null,
-                                    android.bluetooth.le.ScanSettings.Builder()
-                                        .setScanMode(android.bluetooth.le.ScanSettings.SCAN_MODE_LOW_LATENCY)
-                                        .build(),
-                                    scanCallback,
-                                )
-                                scanning = true
-                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
-                                    { stopScan() }, 12_000
-                                )
-                            }
-                        } catch (se: SecurityException) {
-                            scanMsg = "Bluetooth permission denied."
-                        }
-                    },
-                    enabled = !scanning,
-                ) { Text(if (scanning) "Scanning…" else "Scan for BLE adapters") }
-                if (scanning) OutlinedButton(onClick = { stopScan() }) { Text("Stop") }
-            }
-            scanMsg?.let { Text(it, color = Color(0xFFB3261E)) }
-            Spacer(Modifier.height(8.dp))
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                item {
+                    Text("BLE adapters (odbble and friends need NO pairing — just scan and tap). If nothing appears, turn Location on: some phones require it for BLE scans.",
+                        style = MaterialTheme.typography.bodySmall)
+                }
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = {
+                                bleHits = emptyList()
+                                scanMsg = null
+                                try {
+                                    val s = adapter?.bluetoothLeScanner
+                                    if (s == null) {
+                                        scanMsg = "No BLE scanner — is Bluetooth on?"
+                                    } else {
+                                        s.startScan(
+                                            null,
+                                            android.bluetooth.le.ScanSettings.Builder()
+                                                .setScanMode(android.bluetooth.le.ScanSettings.SCAN_MODE_LOW_LATENCY)
+                                                .build(),
+                                            scanCallback,
+                                        )
+                                        scanning = true
+                                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
+                                            { stopScan() }, 12_000
+                                        )
+                                    }
+                                } catch (se: SecurityException) {
+                                    scanMsg = "Bluetooth permission denied."
+                                }
+                            },
+                            enabled = !scanning,
+                        ) { Text(if (scanning) "Scanning…" else "Scan for BLE adapters") }
+                        if (scanning) OutlinedButton(onClick = { stopScan() }) { Text("Stop") }
+                    }
+                }
+                scanMsg?.let { msg ->
+                    item { Text(msg, color = Color(0xFFB3261E)) }
+                }
                 items(bleHits) { d ->
                     Card(onClick = { stopScan(); onPick(d, true) }) {
                         Text("${d.name ?: "(no name)"} · BLE\n${d.address}", Modifier.padding(12.dp))

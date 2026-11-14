@@ -34,6 +34,9 @@ class Elm327Client(
 
     fun isConnected(): Boolean = open
 
+    /** Where a BLE setup got stuck (empty for Classic). Shown in the error. */
+    fun transportStage(): String = (transport as? BleTransport)?.stage.orEmpty()
+
     /** Read one PID. Returns decoded value or null (unsupported / timeout). */
     fun readPid(def: PidDef): Float? {
         if (!open) return null
