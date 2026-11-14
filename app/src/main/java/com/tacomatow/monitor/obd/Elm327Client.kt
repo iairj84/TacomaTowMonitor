@@ -15,9 +15,14 @@ class Elm327Client(
 ) {
     private var currentHeader: String? = null
     @Volatile private var open = false
+    @Volatile private var transportOpened = false
+
+    /** False means we never even got a byte pipe — very different from a silent dongle. */
+    fun didOpenTransport(): Boolean = transportOpened
 
     fun connect(): Boolean {
         if (!transport.open()) return false
+        transportOpened = true
         open = true
         var anyAnswer = false
 
@@ -53,10 +58,11 @@ class Elm327Client(
 
     fun isConnected(): Boolean = open
 
-    /** Where setup got stuck (empty unless a BLE link failed). Shown in the error. */
-    fun transportStage(): String {
-        val ble = transport as? BleTransport ?: return ""
-        return ble.stage
+    /** Where setup got stuck. Shown in the error text. */
+    fun transportStage(): String = when (val t = transport) {
+        is BleTransport -> t.stage
+        is SppTransport -> t.stage
+        else -> ""
     }
 
     /** Setup trail for the in-app adapter log. */

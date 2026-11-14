@@ -130,7 +130,7 @@ class MainActivity : ComponentActivity() {
 
         if (showPicker) {
             BluetoothPicker(
-                onPick = { device, ble ->
+                onPick = { device, _ ->
                     showPicker = false
                     val mgr = getSystemService(BluetoothManager::class.java)
                     val adapter: BluetoothAdapter? = mgr?.adapter
@@ -141,8 +141,10 @@ class MainActivity : ComponentActivity() {
                     val done: (Boolean, String?) -> Unit = { ok, why ->
                         connectMsg = if (ok) null else (why ?: "Connect failed")
                     }
-                    if (ble) ObdHolder.repository.connectBle(this@MainActivity, device, done)
-                    else ObdHolder.repository.connect(adapter, device, done)
+                    // Same call either way: classic is tried, then BLE falls in
+                    // behind it. BLE-only dongles show up in the bonded list too,
+                    // which is exactly how the wrong radio got picked before.
+                    ObdHolder.repository.connectAny(this@MainActivity, adapter, device, done)
                 },
                 onDismiss = { showPicker = false },
             )
@@ -350,7 +352,7 @@ class MainActivity : ComponentActivity() {
                 } else {
                     items(bonded) { d ->
                         Card(onClick = { stopScan(); onPick(d, false) }) {
-                            Text("${d.name ?: "(no name)"}\n${d.address}", Modifier.padding(12.dp))
+                            Text("${d.name ?: "(no name)"}\nTap to connect · ${d.address}", Modifier.padding(12.dp))
                         }
                     }
                 }

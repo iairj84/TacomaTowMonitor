@@ -102,63 +102,101 @@ class ObdRepository(
         }
     }
 
-    /** Bluetooth Classic (SPP) dongles: OBDII / ELM327 / VGate-SPP. */
-    fun connect(adapter: BluetoothAdapter, device: BluetoothDevice, onDone: (Boolean, String?) -> Unit = { _, _ -> }) {
-        beginSession(device.name ?: device.address, { SppTransport(adapter, device) }, onDone)
-    }
-
-    /** Bluetooth LE dongles: the plug-ins Torque shows as "odbBLE" / "odbble". */
-    fun connectBle(context: android.content.Context, device: BluetoothDevice, onDone: (Boolean, String?) -> Unit = { _, _ -> }) {
-        beginSession(device.name ?: device.address, { BleTransport(context.applicationContext, device) }, onDone)
+    /**
+     * Connect to any picked dongle, regardless of which radio it uses.
+     * Classic RFCOMM is tried first (fast, and the common case), then BLE.
+     * SPP dies immediately on BLE-only hardware, so this fallback is cheap —
+     * and it means the user never has to know which list to pick from.
+     */
+    fun connectAny(
+        context: android.content.Context,
+        adapter: BluetoothAdapter,
+        device: BluetoothDevice,
+        onDone: (Boolean, String?) -> Unit = { _, _ -> },
+    ) {
+        beginSession(
+            label = device.name ?: device.address,
+            transports = listOf(
+                "classic" to { SppTransport(adapter, device) as ElmTransport },
+                "ble" to { BleTransport(context.applicationContext, device) as ElmTransport },
+            ),
+            onDone = onDone,
+        )
     }
 
     private fun beginSession(
         label: String,
-        transport: () -> ElmTransport,
+        transports: List<Pair<String, () -> ElmTransport>>,
         onDone: (Boolean, String?) -> Unit = { _, _ -> },
     ) {
         stopPoll()
         _state.update { it.copy(error = null, demoMode = false, deviceName = label) }
         scope.launch {
-            val c = Elm327Client(transport())
-            val ok = try {
-                withContext(Dispatchers.IO) { c.connect() }
-            } catch (e: SecurityException) {
-                withContext(Dispatchers.Main) { onDone(false, "Bluetooth permission denied") }
-                _state.update { it.copy(error = "Bluetooth permission denied") }
-                return@launch
-            } catch (e: Exception) {
-                false
-            }
-            if (!ok) {
+            val trail = mutableListOf<String>()
+            var failed: Elm327Client? = null
+            var winner: Elm327Client? = null
+            var winnerKind = ""
+
+            for ((kind, make) in transports) {
+                val c = Elm327Client(make())
+                val ok = try {
+                    withContext(Dispatchers.IO) { c.connect() }
+                } catch (e: SecurityException) {
+                    withContext(Dispatchers.Main) { onDone(false, "Bluetooth permission denied") }
+                    _state.update { it.copy(error = "Bluetooth permission denied") }
+                    return@launch
+                } catch (e: Exception) {
+                    false
+                }
+                trail += c.transcript()
+                if (ok) {
+                    winner = c
+                    winnerKind = kind
+                    break
+                }
                 c.close()
-                val stage = c.transportStage()
+                failed = c
+                trail += "$kind: not usable, trying next transport"
+            }
+
+            val won = winner
+            if (won == null) {
+                val stage = failed?.transportStage().orEmpty()
+                val opened = failed?.didOpenTransport() == true
                 val msg = when {
-                    stage.isEmpty() || stage == "ready" ->
-                        "Connected to the adapter, but it never answered AT commands. Ignition must be ON for it to reply — turn the key to ON and try again."
+                    !opened ->
+                        "Couldn't open a Bluetooth channel to ${label} over classic or BLE. If Torque was open, force-close it — these dongles accept one connection at a time."
                     stage == "no-answer-on-probe" ->
-                        "Paired over BLE but the dongle stayed silent on every data channel. Force-close Torque/Torque Pro and any other OBD app, then retry."
+                        "Paired over BLE but the dongle stayed silent on every data channel. Force-close Torque and any other OBD app, then retry."
                     stage == "link-timeout" ->
-                        "Couldn't establish the BLE link. Move the phone closer to the dongle and check nothing else is connected to it."
-                    else -> "Couldn't open the adapter ($stage). See the adapter log below."
+                        "Couldn't establish the BLE link. Move the phone closer and make sure nothing else is connected to the dongle."
+                    else ->
+                        "Reached the adapter, but it never answered AT commands. Turn the ignition ON so it can reply, then retry."
                 }
                 _state.update {
                     it.copy(
                         connected = false,
                         error = msg,
                         triedConnect = true,
-                        diagnostics = c.transcript(),
+                        diagnostics = trail,
                     )
                 }
                 withContext(Dispatchers.Main) { onDone(false, "ELM init failed") }
                 return@launch
             }
-            client = c
+
+            client = won
             _state.update {
-                it.copy(connected = true, error = null, triedConnect = true, diagnostics = c.transcript())
+                it.copy(
+                    connected = true,
+                    error = null,
+                    deviceName = "$label (${if (winnerKind == "ble") "BLE" else "classic"})",
+                    triedConnect = true,
+                    diagnostics = trail,
+                )
             }
             withContext(Dispatchers.Main) { onDone(true, null) }
-            startPoll(c)
+            startPoll(won)
         }
     }
 

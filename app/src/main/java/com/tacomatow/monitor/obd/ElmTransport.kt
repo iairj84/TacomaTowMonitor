@@ -48,6 +48,10 @@ class SppTransport(
     private var output: OutputStream? = null
     private val log = mutableListOf<String>()
 
+    /** Setup stage, mirrored into the adapter log / error text. */
+    @Volatile var stage = "starting"
+        private set
+
     override fun transcript(): List<String> = synchronized(log) { log.toList() }
 
     private fun note(s: String) = synchronized(log) { if (log.size < 60) log.add(s) }
@@ -57,6 +61,7 @@ class SppTransport(
         close()
         log.clear()
         return try {
+            stage = "classic-connect"
             note("classic: opening RFCOMM to ${device.address}")
             val sock = device.createRfcommSocketToServiceRecord(SPP_UUID)
             adapter.cancelDiscovery()
@@ -64,9 +69,12 @@ class SppTransport(
             socket = sock
             input = sock.inputStream
             output = sock.outputStream
+            stage = "ready"
             note("classic: socket up")
             true
         } catch (e: Exception) {
+            // The usual cause: a BLE-only dongle has no RFCOMM service at all.
+            stage = "classic-connect-failed"
             note("classic: connect failed (${e.javaClass.simpleName})")
             close()
             false
