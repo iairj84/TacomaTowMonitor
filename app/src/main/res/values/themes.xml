@@ -1,3 +1,7 @@
 <resources>
-    <style name="Theme.TacomaTowMonitor" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.TacomaTowMonitor" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#F5F4F0</item>
+        <item name="android:statusBarColor">#F5F4F0</item>
+        <item name="android:navigationBarColor">#F5F4F0</item>
+    </style>
 </resources>

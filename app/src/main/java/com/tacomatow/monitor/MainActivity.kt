@@ -13,6 +13,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,13 +23,27 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -36,20 +51,25 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.tacomatow.monitor.obd.GaugeReading
 import com.tacomatow.monitor.obd.ObdForegroundService
 import com.tacomatow.monitor.obd.ObdHolder
 import com.tacomatow.monitor.obd.ObdUiState
+import com.tacomatow.monitor.ui.LocalTowPalette
+import com.tacomatow.monitor.ui.TacomaTheme
 import java.io.File
 
 class MainActivity : ComponentActivity() {
@@ -63,9 +83,20 @@ class MainActivity : ComponentActivity() {
         ObdHolder.repository.attachLogDir(File(filesDir, "tow-logs"))
         requestBtPermissions()
         setContent {
-            MaterialTheme {
+            val systemDark = isSystemInDarkTheme()
+            // 0 = follow system, 1 = force dark, 2 = force light
+            var themeMode by rememberSaveable { mutableIntStateOf(0) }
+            val dark = when (themeMode) {
+                1 -> true
+                2 -> false
+                else -> systemDark
+            }
+            TacomaTheme(darkTheme = dark) {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    TowHome()
+                    TowHome(
+                        dark = dark,
+                        onToggleTheme = { themeMode = if (dark) 2 else 1 },
+                    )
                 }
             }
         }
@@ -88,57 +119,60 @@ class MainActivity : ComponentActivity() {
 
     @SuppressLint("MissingPermission")
     @Composable
-    private fun TowHome() {
-        // (Unusual name keeps this sample's screen distinct; it is the tow dashboard.)
+    private fun TowHome(dark: Boolean, onToggleTheme: () -> Unit) {
         val state by ObdHolder.repository.state.collectAsState()
         var showPicker by remember { mutableStateOf(false) }
         var connectMsg by remember { mutableStateOf<String?>(null) }
 
-        // One scrollable column: gauges, buttons and the adapter log all reachable.
-        Column(
-            Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-        ) {
-            Text("Tacoma Tow Monitor", style = MaterialTheme.typography.headlineSmall)
-            Text(
-                "2019 Tacoma V6 A/T · ELM327 · trans pan / converter, coolant, oil",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            Spacer(Modifier.height(12.dp))
+        Column(Modifier.fillMaxSize()) {
+            Header(dark = dark, onToggleTheme = onToggleTheme)
 
-            ConnectionBar(
-                state = state,
-                onPick = { showPicker = true },
-                onDemo = { ObdHolder.repository.startDemo() },
-                onDisconnect = { ObdHolder.repository.disconnect() },
-            )
-            connectMsg?.let { Text(it, color = Color(0xFFB3261E)) }
-            Spacer(Modifier.height(12.dp))
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp),
+            ) {
+                ConnectionPanel(
+                    state = state,
+                    onConnect = { showPicker = true },
+                    onDemo = { ObdHolder.repository.startDemo() },
+                    onDisconnect = { ObdHolder.repository.disconnect() },
+                )
 
-            GaugeGrid(state)
-
-            Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = {
-                    startForegroundService(Intent(this@MainActivity, ObdForegroundService::class.java))
-                }) { Text("Keep alive") }
-                OutlinedButton(onClick = { ObdHolder.repository.toggleLogging() }) {
-                    Text(if (state.logging) "Stop trip log" else "Log tow trip")
+                connectMsg?.let {
+                    Spacer(Modifier.height(8.dp))
+                    NoticeCard(it)
                 }
-            }
-            if (state.logging) {
-                Text("Logging CSV to app files/tow-logs — copy it off after the trip.",
-                    style = MaterialTheme.typography.bodySmall)
-            }
-            state.error?.let {
-                Spacer(Modifier.height(8.dp))
-                Text(it, color = Color(0xFFB3261E))
-            }
-            if (state.triedConnect) {
-                Spacer(Modifier.height(8.dp))
-                AdapterLog(state.diagnostics)
+
+                Spacer(Modifier.height(14.dp))
+                GaugeCluster(state)
+
+                Spacer(Modifier.height(14.dp))
+                ActionRow(state)
+
+                state.logging.let {
+                    if (it) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Recording this pull to CSV in app storage.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+
+                state.error?.let {
+                    Spacer(Modifier.height(10.dp))
+                    NoticeCard(it)
+                }
+
+                if (state.triedConnect) {
+                    Spacer(Modifier.height(10.dp))
+                    AdapterLog(state.diagnostics)
+                }
+
+                Spacer(Modifier.height(28.dp))
             }
         }
 
@@ -155,9 +189,6 @@ class MainActivity : ComponentActivity() {
                     val done: (Boolean, String?) -> Unit = { ok, why ->
                         connectMsg = if (ok) null else (why ?: "Connect failed")
                     }
-                    // Same call either way: classic is tried, then BLE falls in
-                    // behind it. BLE-only dongles show up in the bonded list too,
-                    // which is exactly how the wrong radio got picked before.
                     ObdHolder.repository.connectAny(this@MainActivity, adapter, device, done)
                 },
                 onDismiss = { showPicker = false },
@@ -165,21 +196,360 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    @SuppressLint("MissingPermission")
     @Composable
-    private fun ConnectionBar(
+    private fun Header(dark: Boolean, onToggleTheme: () -> Unit) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 20.dp, end = 8.dp, top = 14.dp, bottom = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "TACOMA TOW",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    "Transmission monitor",
+                    style = MaterialTheme.typography.headlineSmall,
+                )
+            }
+            IconButton(onClick = onToggleTheme) {
+                Icon(
+                    imageVector = if (dark) Icons.Filled.LightMode else Icons.Filled.DarkMode,
+                    contentDescription = if (dark) "Switch to light theme" else "Switch to dark theme",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+    }
+
+    @Composable
+    private fun ConnectionPanel(
         state: ObdUiState,
-        onPick: () -> Unit,
+        onConnect: () -> Unit,
         onDemo: () -> Unit,
         onDisconnect: () -> Unit,
     ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            if (state.connected) {
-                Text("● ${state.deviceName ?: "Connected"}", modifier = Modifier.weight(1f).padding(top = 12.dp))
-                OutlinedButton(onClick = onDisconnect) { Text("Disconnect") }
-            } else {
-                Button(onClick = onPick, modifier = Modifier.weight(1f)) { Text("Connect ELM327") }
-                OutlinedButton(onClick = onDemo) { Text("Demo") }
+        val palette = LocalTowPalette.current
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+            border = androidx.compose.foundation.BorderStroke(
+                1.dp, MaterialTheme.colorScheme.outlineVariant,
+            ),
+        ) {
+            Row(
+                Modifier.fillMaxWidth().padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    Modifier
+                        .size(10.dp)
+                        .clip(CircleShape)
+                        .background(if (state.connected) palette.ok else palette.idle),
+                )
+                Spacer(Modifier.size(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        if (state.connected) (state.deviceName ?: "Connected") else "No adapter",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        when {
+                            state.demoMode -> "Demo data — no dongle attached"
+                            state.connected -> "Live from the ELM327"
+                            else -> "2019 Tacoma V6 · 3.5L"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (state.connected) {
+                    OutlinedButton(onClick = onDisconnect) { Text("Disconnect") }
+                } else {
+                    Button(onClick = onConnect) { Text("Connect") }
+                    Spacer(Modifier.size(8.dp))
+                    FilledTonalButton(onClick = onDemo) { Text("Demo") }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun ActionRow(state: ObdUiState) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            FilledTonalButton(
+                onClick = {
+                    startForegroundService(Intent(this@MainActivity, ObdForegroundService::class.java))
+                },
+                modifier = Modifier.weight(1f),
+            ) {
+                Icon(Icons.Filled.Sync, contentDescription = null, Modifier.size(18.dp))
+                Spacer(Modifier.size(8.dp))
+                Text("Keep polling")
+            }
+            FilledTonalButton(
+                onClick = { ObdHolder.repository.toggleLogging() },
+                modifier = Modifier.weight(1f),
+                colors = if (state.logging) {
+                    ButtonDefaults.filledTonalButtonColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer,
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                } else {
+                    ButtonDefaults.filledTonalButtonColors()
+                },
+            ) {
+                Icon(
+                    imageVector = if (state.logging) Icons.Filled.Stop else Icons.Filled.PlayArrow,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.size(8.dp))
+                Text(if (state.logging) "Stop log" else "Log trip")
+            }
+        }
+    }
+
+    @Composable
+    private fun NoticeCard(message: String) {
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.errorContainer,
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                message,
+                Modifier.padding(14.dp),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+        }
+    }
+
+    // ---------- gauges ----------
+
+    private fun statusWord(status: String?): String = when (status) {
+        "CRIT" -> "STOP — COOL DOWN"
+        "WARN" -> "EASE OFF"
+        "HOLD" -> "HOLDING"
+        "NO DATA" -> "NO DATA"
+        else -> "NORMAL"
+    }
+
+    /** Large transmission gauge: the number you glance at while pulling. */
+    @Composable
+    private fun HeroGauge(
+        g: GaugeReading?,
+        title: String,
+        warnF: Float,
+        critF: Float,
+    ) {
+        val palette = LocalTowPalette.current
+        val status = g?.status
+        val value = g?.valueF
+        val accent = when (status) {
+            "CRIT" -> palette.crit
+            "WARN" -> palette.warn
+            "HOLD", "NO DATA" -> palette.idle
+            else -> palette.ok
+        }
+        val surface = when (status) {
+            "CRIT" -> palette.critSurface
+            "WARN" -> palette.warnSurface
+            "HOLD", "NO DATA" -> palette.idleSurface
+            else -> palette.okSurface
+        }
+
+        Card(
+            colors = CardDefaults.cardColors(containerColor = surface),
+            modifier = Modifier.fillMaxWidth(),
+            border = androidx.compose.foundation.BorderStroke(1.dp, accent.copy(alpha = 0.25f)),
+        ) {
+            Column(Modifier.fillMaxWidth().padding(18.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        title.uppercase(),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(accent.copy(alpha = 0.16f))
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                    ) {
+                        Text(
+                            statusWord(status),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = accent,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(2.dp))
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Text(
+                        text = value?.let { "%.0f".format(it) } ?: "—",
+                        style = MaterialTheme.typography.displayLarge,
+                        color = if (value == null) palette.idle else accent,
+                    )
+                    Text(
+                        "°F",
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 8.dp, bottom = 14.dp),
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                val span = (critF + 20f) - 100f
+                val frac = value?.let { ((it - 100f) / span).coerceIn(0f, 1f) } ?: 0f
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(10.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(palette.track),
+                ) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth(frac)
+                            .height(10.dp)
+                            .clip(RoundedCornerShape(50))
+                            .background(accent),
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("100", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        "WARN ${"%.0f".format(warnF)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.warn,
+                    )
+                    Text(
+                        "CRIT ${"%.0f".format(critF)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.crit,
+                    )
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun MiniGauge(g: GaugeReading?, modifier: Modifier = Modifier) {
+        val palette = LocalTowPalette.current
+        val value = g?.valueF
+        val accent = when (g?.status) {
+            "CRIT" -> palette.crit
+            "WARN" -> palette.warn
+            "HOLD", "NO DATA" -> palette.idle
+            else -> palette.ok
+        }
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            modifier = modifier,
+            border = androidx.compose.foundation.BorderStroke(
+                1.dp, MaterialTheme.colorScheme.outlineVariant,
+            ),
+        ) {
+            Column(Modifier.padding(14.dp)) {
+                Text(
+                    (g?.label ?: "—").uppercase(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Text(
+                        value?.let {
+                            if (g?.unit == "rpm") it.toInt().toString() else "%.0f".format(it)
+                        } ?: "—",
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = if (value == null) palette.idle else accent,
+                    )
+                    Text(
+                        " ${g?.unit ?: ""}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 4.dp, start = 3.dp),
+                    )
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun GaugeCluster(state: ObdUiState) {
+        if (!state.connected) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier.fillMaxWidth(),
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp, MaterialTheme.colorScheme.outlineVariant,
+                ),
+            ) {
+                Column(Modifier.padding(18.dp)) {
+                    Text("Nothing connected", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Connect your ELM327 with the ignition on. Paired classic dongles appear first; " +
+                            "BLE ones like odbble are found by scanning. Demo shows the layout with sample data.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            return
+        }
+
+        val pan = state.readings["trans_pan"]
+        val conv = state.readings["trans_conv"]
+        if (pan == null && conv == null) {
+            Text(
+                "Detecting the transmission temperature request…",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            return
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            HeroGauge(pan, "Transmission pan", 220f, 240f)
+            HeroGauge(conv, "Converter out", 230f, 250f)
+
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                MiniGauge(state.readings["coolant"], Modifier.weight(1f))
+                MiniGauge(state.readings["rpm"], Modifier.weight(1f))
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                MiniGauge(state.readings["oil"], Modifier.weight(1f))
+                MiniGauge(state.readings["speed"], Modifier.weight(1f))
+            }
+
+            Row(
+                Modifier.fillMaxWidth().padding(top = 2.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    "Updated " + (state.lastUpdateMs.takeIf { it > 0 }
+                        ?.let { android.text.format.DateFormat.format("HH:mm:ss", it) } ?: "—"),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    state.voltage?.let { "Adapter %.1f V".format(it) } ?: "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
@@ -187,19 +557,38 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun AdapterLog(lines: List<String>) {
         var open by remember { mutableStateOf(false) }
-        Column {
-            OutlinedButton(onClick = { open = !open }) {
-                Text(if (open) "Hide adapter log" else "Show adapter log")
-            }
-            if (open) {
-                if (lines.isEmpty()) {
-                    Text("No log yet.", style = MaterialTheme.typography.bodySmall)
-                } else {
-                    Card {
-                        Column(Modifier.padding(12.dp)) {
-                            lines.forEach { line ->
-                                Text(line, style = MaterialTheme.typography.bodySmall)
-                            }
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            modifier = Modifier.fillMaxWidth(),
+            border = androidx.compose.foundation.BorderStroke(
+                1.dp, MaterialTheme.colorScheme.outlineVariant,
+            ),
+        ) {
+            Column(Modifier.padding(14.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "ADAPTER LOG",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    OutlinedButton(onClick = { open = !open }) {
+                        Text(if (open) "Hide" else "Show")
+                    }
+                }
+                if (open) {
+                    Spacer(Modifier.height(8.dp))
+                    if (lines.isEmpty()) {
+                        Text("Nothing recorded yet.", style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        lines.forEach { line ->
+                            Text(
+                                line,
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontFamily = FontFamily.Monospace,
+                                ),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                     }
                 }
@@ -207,177 +596,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Status colour for a gauge: calm green, hot amber, critical red, muted grey. */
-    private fun statusColor(status: String?): Color = when (status) {
-        "CRIT" -> Color(0xFFC62828)
-        "WARN" -> Color(0xFFB26A00)
-        "HOLD" -> Color(0xFF6A6A6A)
-        "NO DATA" -> Color(0xFF9E9E9E)
-        else -> Color(0xFF2E7D32)
-    }
+    // ---------- adapter picker ----------
 
-    private fun statusWord(status: String?): String = when (status) {
-        "CRIT" -> "CRITICAL — STOP AND COOL"
-        "WARN" -> "HOT — EASE OFF"
-        "HOLD" -> "HOLDING"
-        "NO DATA" -> "NO DATA"
-        else -> "OK"
-    }
-
-    /** Background tint that reads at a glance from the driver's seat. */
-    private fun statusTint(status: String?): Color = when (status) {
-        "CRIT" -> Color(0xFFFBE3E3)
-        "WARN" -> Color(0xFFFFF1D6)
-        "HOLD" -> Color(0xFFEFEFEF)
-        "NO DATA" -> Color(0xFFF2F2F2)
-        else -> Color(0xFFE8F3E8)
-    }
-
-    /**
-     * A single tow gauge. [hero] makes the transmission temps enormous —
-     * they are the numbers being watched while dragging a trailer, so the
-     * value dominates and the bar shows position between cold and critical.
-     */
-    @Composable
-    private fun TowGauge(
-        g: GaugeReading?,
-        title: String,
-        warnF: Float,
-        critF: Float,
-        hero: Boolean = false,
-    ) {
-        val value = g?.valueF
-        val status = g?.status
-        val numberSize = if (hero) MaterialTheme.typography.displayLarge else MaterialTheme.typography.headlineMedium
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = statusTint(status)),
-        ) {
-            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = if (hero) 14.dp else 10.dp)) {
-                Text(title.uppercase(), style = MaterialTheme.typography.labelMedium, color = Color(0xFF4A4A4A))
-                Row(verticalAlignment = androidx.compose.ui.Alignment.Bottom) {
-                    Text(
-                        text = value?.let { "%.0f".format(it) } ?: "—",
-                        style = numberSize,
-                        color = if (value == null) Color(0xFF9E9E9E) else statusColor(status),
-                    )
-                    Text(
-                        text = " °F",
-                        style = if (hero) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.bodyMedium,
-                        color = Color(0xFF5A5A5A),
-                        modifier = Modifier.padding(bottom = if (hero) 8.dp else 3.dp),
-                    )
-                    Spacer(Modifier.weight(1f))
-                    if (hero) {
-                        Text(
-                            statusWord(status),
-                            style = MaterialTheme.typography.labelLarge,
-                            color = statusColor(status),
-                        )
-                    }
-                }
-                Spacer(Modifier.height(6.dp))
-                // Scale runs 100°F (cold) to crit+20 (danger).
-                val span = (critF + 20f) - 100f
-                val frac = value?.let { ((it - 100f) / span).coerceIn(0f, 1f) } ?: 0f
-                val track = if (hero) 12.dp else 6.dp
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(track)
-                        .clip(RoundedCornerShape(track / 2))
-                        .background(Color(0x22000000)),
-                ) {
-                    Box(
-                        Modifier
-                            .fillMaxWidth(frac)
-                            .height(track)
-                            .clip(RoundedCornerShape(track / 2))
-                            .background(statusColor(status)),
-                    )
-                }
-                if (hero) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("100", style = MaterialTheme.typography.labelSmall, color = Color(0xFF6A6A6A))
-                        Text("warn %.0f".format(warnF), style = MaterialTheme.typography.labelSmall, color = Color(0xFF6A6A6A))
-                        Text("crit %.0f".format(critF), style = MaterialTheme.typography.labelSmall, color = Color(0xFF6A6A6A))
-                    }
-                }
-            }
-        }
-    }
-
-    @Composable
-    private fun CompactGauge(g: GaugeReading?, modifier: Modifier = Modifier) {
-        val value = g?.valueF
-        Card(
-            modifier = modifier,
-            colors = CardDefaults.cardColors(containerColor = statusTint(g?.status)),
-        ) {
-            Column(Modifier.padding(12.dp)) {
-                Text((g?.label ?: "—").uppercase(), style = MaterialTheme.typography.labelSmall, color = Color(0xFF4A4A4A))
-                Text(
-                    value?.let { if (g?.unit == "rpm") it.toInt().toString() else "%.0f".format(it) } ?: "—",
-                    style = MaterialTheme.typography.headlineSmall,
-                    color = when {
-                        value == null -> Color(0xFF9E9E9E)
-                        g?.status == "CRIT" -> Color(0xFFC62828)
-                        g?.status == "WARN" -> Color(0xFFB26A00)
-                        else -> Color(0xFF1B1B1B)
-                    },
-                )
-                Text(g?.unit ?: "", style = MaterialTheme.typography.labelSmall, color = Color(0xFF6A6A6A))
-            }
-        }
-    }
-
-    @Composable
-    private fun GaugeGrid(state: ObdUiState) {
-        if (!state.connected) {
-            Card {
-                Text(
-                    "Tap Connect: paired classic dongles appear first, or scan for BLE ones (odbble). " +
-                        "Turn the ignition ON so the adapter can answer. Tap Demo to preview the layout.",
-                    Modifier.padding(16.dp),
-                )
-            }
-            return
-        }
-        val pan = state.readings["trans_pan"]
-        val conv = state.readings["trans_conv"]
-        if (pan == null && conv == null) {
-            Text("Talking to the adapter… first sweep takes a few seconds (transmission request detection runs first).")
-            return
-        }
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            // Transmission first: the two numbers that decide how hard you can pull.
-            TowGauge(pan, "Transmission pan", 220f, 240f, hero = true)
-            TowGauge(conv, "Torque converter out", 230f, 250f, hero = true)
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                CompactGauge(state.readings["coolant"], Modifier.weight(1f))
-                CompactGauge(state.readings["rpm"], Modifier.weight(1f))
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                CompactGauge(state.readings["oil"], Modifier.weight(1f))
-                CompactGauge(state.readings["speed"], Modifier.weight(1f))
-            }
-
-            Text(
-                "Adapter ${state.voltage?.let { "%.1fV".format(it) } ?: ""} · updated " +
-                    (state.lastUpdateMs.takeIf { it > 0 }
-                        ?.let { android.text.format.DateFormat.format("HH:mm:ss", it) } ?: "—"),
-                style = MaterialTheme.typography.bodySmall,
-            )
-            Text(
-                "Pan past 220°F: back off the throttle. Past 240°F: pull over and idle to cool. " +
-                    "The converter always runs hotter — watch the gap widen on a long grade.",
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-    }
-
-    /** One BLE sighting: advertised name if there is one, live signal level. */
     private data class BleHit(val device: BluetoothDevice, val name: String?, val rssi: Int)
 
     private val OBD_KEYWORDS = listOf(
@@ -396,28 +616,6 @@ class MainActivity : ComponentActivity() {
         rssi >= -67 -> "▂▄▆"
         rssi >= -80 -> "▂▄"
         else -> "▂"
-    }
-
-    @Composable
-    private fun BleRow(h: BleHit, onTap: () -> Unit) {
-        Card(onClick = onTap, modifier = Modifier.fillMaxWidth()) {
-            Row(
-                Modifier.fillMaxWidth().padding(12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        h.name ?: "Unknown device",
-                        style = MaterialTheme.typography.bodyLarge,
-                    )
-                    Text(h.device.address, style = MaterialTheme.typography.bodySmall)
-                }
-                Text(
-                    "${rssiBars(h.rssi)} ${h.rssi} dBm",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-        }
     }
 
     @SuppressLint("MissingPermission")
@@ -439,7 +637,6 @@ class MainActivity : ComponentActivity() {
                 @SuppressLint("MissingPermission")
                 override fun onScanResult(type: Int, result: android.bluetooth.le.ScanResult) {
                     val d = result.device ?: return
-                    // Advertised name is far more reliable than the cached device name.
                     val name = try {
                         result.scanRecord?.deviceName ?: d.name
                     } catch (se: SecurityException) { null }
@@ -447,6 +644,7 @@ class MainActivity : ComponentActivity() {
                     bleHits = (bleHits.filterNot { it.device.address == d.address } + hit)
                         .sortedByDescending { it.rssi }
                 }
+
                 override fun onScanFailed(code: Int) {
                     scanMsg = "BLE scan failed ($code). Is Bluetooth on?"
                     scanning = false
@@ -457,100 +655,188 @@ class MainActivity : ComponentActivity() {
             try { adapter?.bluetoothLeScanner?.stopScan(scanCallback) } catch (_: Exception) {}
             scanning = false
         }
-        // ONE scrollable list: two LazyColumns in a Column starve each other
-        // of height, which is what made the old picker wonky.
-        Column(Modifier.fillMaxSize().padding(24.dp)) {
-            Text("Pick your ELM327", style = MaterialTheme.typography.headlineSmall)
-            Spacer(Modifier.height(8.dp))
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                item {
-                    Text("Classic (OBDII / ELM327 / VGate) — pair in system Bluetooth first (PIN 0000 or 1234), then pick below.",
-                        style = MaterialTheme.typography.bodySmall)
+
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            Column(Modifier.fillMaxSize()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 14.dp, bottom = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "ADAPTER",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Text("Choose your ELM327", style = MaterialTheme.typography.headlineSmall)
+                    }
+                    IconButton(onClick = { stopScan(); onDismiss() }) {
+                        Text("✕", style = MaterialTheme.typography.headlineSmall)
+                    }
                 }
-                if (bonded.isEmpty()) {
-                    item { Text("No paired classic devices.", style = MaterialTheme.typography.bodySmall) }
-                } else {
-                    items(bonded) { d ->
-                        Card(onClick = { stopScan(); onPick(d, false) }) {
-                            Text("${d.name ?: "(no name)"}\nTap to connect · ${d.address}", Modifier.padding(12.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                        start = 16.dp, end = 16.dp, top = 12.dp, bottom = 12.dp,
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    item { SectionLabel("PAIRED (BLUETOOTH CLASSIC)") }
+                    if (bonded.isEmpty()) {
+                        item {
+                            Text(
+                                "No paired devices. Pair the dongle in Android Bluetooth settings first (PIN 0000 or 1234), then reopen this screen.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    } else {
+                        items(bonded) { d ->
+                            PickerRow(
+                                title = d.name ?: "Unnamed device",
+                                subtitle = d.address,
+                                trailing = "PAIRED",
+                                onClick = { stopScan(); onPick(d, false) },
+                            )
                         }
                     }
-                }
-                item {
-                    Text("BLE adapters (odbble and friends need NO pairing — just scan and tap). If nothing appears, turn Location on: some phones require it for BLE scans.",
-                        style = MaterialTheme.typography.bodySmall)
-                }
-                item {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = {
-                                bleHits = emptyList()
-                                scanMsg = null
-                                try {
-                                    val s = adapter?.bluetoothLeScanner
-                                    if (s == null) {
-                                        scanMsg = "No BLE scanner — is Bluetooth on?"
-                                    } else {
-                                        s.startScan(
-                                            null,
-                                            android.bluetooth.le.ScanSettings.Builder()
-                                                .setScanMode(android.bluetooth.le.ScanSettings.SCAN_MODE_LOW_LATENCY)
-                                                .build(),
-                                            scanCallback,
-                                        )
-                                        scanning = true
-                                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
-                                            { stopScan() }, 12_000
-                                        )
-                                    }
-                                } catch (se: SecurityException) {
-                                    scanMsg = "Bluetooth permission denied."
-                                }
-                            },
-                            enabled = !scanning,
-                        ) { Text(if (scanning) "Scanning…" else "Scan for BLE adapters") }
-                        if (scanning) OutlinedButton(onClick = { stopScan() }) { Text("Stop") }
+
+                    item { Spacer(Modifier.height(6.dp)) }
+                    item { SectionLabel("NEARBY (BLUETOOTH LE)") }
+                    item {
+                        Text(
+                            "BLE dongles need no pairing. Scan and tap the one in your truck.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
-                }
-                scanMsg?.let { msg ->
-                    item { Text(msg, color = Color(0xFFB3261E)) }
-                }
-                run {
+                    item {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    bleHits = emptyList()
+                                    scanMsg = null
+                                    try {
+                                        val s = adapter?.bluetoothLeScanner
+                                        if (s == null) {
+                                            scanMsg = "No BLE scanner — is Bluetooth on?"
+                                        } else {
+                                            s.startScan(
+                                                null,
+                                                android.bluetooth.le.ScanSettings.Builder()
+                                                    .setScanMode(android.bluetooth.le.ScanSettings.SCAN_MODE_LOW_LATENCY)
+                                                    .build(),
+                                                scanCallback,
+                                            )
+                                            scanning = true
+                                            android.os.Handler(android.os.Looper.getMainLooper())
+                                                .postDelayed({ stopScan() }, 12_000)
+                                        }
+                                    } catch (se: SecurityException) {
+                                        scanMsg = "Bluetooth permission denied."
+                                    }
+                                },
+                                enabled = !scanning,
+                            ) { Text(if (scanning) "Scanning…" else "Scan") }
+                            if (scanning) {
+                                OutlinedButton(onClick = { stopScan() }) { Text("Stop") }
+                            }
+                        }
+                    }
+                    scanMsg?.let { msg ->
+                        item {
+                            Text(msg, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+
                     val likely = bleHits.filter { looksLikeObd(it.name) }
                     val other = bleHits.filterNot { looksLikeObd(it.name) }
                     if (bleHits.isNotEmpty() && likely.isEmpty()) {
                         item {
-                            Text("No obvious OBD names in range — your dongle may advertise only a MAC address. Closest (strongest signal) first:",
-                                style = MaterialTheme.typography.bodySmall)
-                        }
-                    } else if (likely.isNotEmpty()) {
-                        item {
-                            Text("Likely OBD adapters — tap to connect:",
-                                style = MaterialTheme.typography.labelMedium)
+                            Text(
+                                "No obvious OBD names nearby — listed strongest signal first.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                     }
+                    if (likely.isNotEmpty()) {
+                        item { SectionLabel("LIKELY OBD ADAPTERS") }
+                    }
                     items(likely, key = { it.device.address }) { h ->
-                        BleRow(h) { stopScan(); onPick(h.device, true) }
+                        PickerRow(
+                            title = h.name ?: "Unknown device",
+                            subtitle = h.device.address,
+                            trailing = "${rssiBars(h.rssi)}  ${h.rssi} dBm",
+                            onClick = { stopScan(); onPick(h.device, true) },
+                        )
                     }
                     if (other.isNotEmpty()) {
                         item {
                             OutlinedButton(onClick = { showAllBle = !showAllBle }) {
-                                Text(if (showAllBle) "Hide ${other.size} other Bluetooth devices" else "Show ${other.size} other Bluetooth devices")
+                                Text(
+                                    if (showAllBle) "Hide ${other.size} other devices"
+                                    else "Show ${other.size} other devices"
+                                )
                             }
                         }
                     }
                     if (showAllBle) {
                         items(other, key = { it.device.address }) { h ->
-                            BleRow(h) { stopScan(); onPick(h.device, true) }
+                            PickerRow(
+                                title = h.name ?: "Unknown device",
+                                subtitle = h.device.address,
+                                trailing = "${rssiBars(h.rssi)}  ${h.rssi} dBm",
+                                onClick = { stopScan(); onPick(h.device, true) },
+                            )
                         }
                     }
                 }
             }
-            Spacer(Modifier.height(12.dp))
-            OutlinedButton(onClick = { stopScan(); onDismiss() }) { Text("Close") }
+        }
+    }
+
+    @Composable
+    private fun SectionLabel(text: String) {
+        Text(
+            text,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 6.dp),
+        )
+    }
+
+    @Composable
+    private fun PickerRow(title: String, subtitle: String, trailing: String, onClick: () -> Unit) {
+        Card(
+            onClick = onClick,
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            modifier = Modifier.fillMaxWidth(),
+            border = androidx.compose.foundation.BorderStroke(
+                1.dp, MaterialTheme.colorScheme.outlineVariant,
+            ),
+        ) {
+            Row(
+                Modifier.fillMaxWidth().padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(title, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        subtitle,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(
+                    trailing,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }
+
