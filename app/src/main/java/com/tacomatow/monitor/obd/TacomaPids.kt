@@ -72,6 +72,85 @@ object TacomaPids {
     val TOW_DASHBOARD = listOf(TRANS_PAN, TRANS_CONVERTER, COOLANT, OIL)
     val ALL = TOW_DASHBOARD + listOf(RPM, SPEED)
 
+    /**
+     * Ways a 3rd-gen Tacoma might expose ATF temperature, best first.
+     *
+     * The 2016+ truck answers Mode 22 DID 1627/1628 requested at 11-bit
+     * header 0x701 (reply arrives from 0x709). Some calibrations answer at
+     * 0x700, and a few report the classic Toyota Mode 21 PID 82 instead.
+     * Rather than hard-code one, the app probes these on connect and keeps
+     * whichever returns a believable temperature.
+     */
+    data class TransCandidate(
+        val header: String?,
+        val mode: String,
+        val pid: String,
+        val kind: String,
+        val label: String,
+    )
+
+    val TRANS_CANDIDATES = listOf(
+        TransCandidate("701", "22", "1627", "1627", "22/1627@701"),
+        TransCandidate("700", "22", "1627", "1627", "22/1627@700"),
+        TransCandidate("7E1", "22", "1627", "1627", "22/1627@7E1"),
+        TransCandidate("7E0", "22", "1627", "1627", "22/1627@7E0"),
+        TransCandidate("7E0", "21", "82", "82", "21/82@7E0"),
+        TransCandidate("7E1", "21", "82", "82", "21/82@7E1"),
+        TransCandidate(null, "21", "82", "82", "21/82@functional"),
+    )
+
+    val CONVERTER_CANDIDATES = listOf(
+        TransCandidate("701", "22", "1628", "1628", "22/1628@701"),
+        TransCandidate("700", "22", "1628", "1628", "22/1628@700"),
+        TransCandidate("7E1", "22", "1628", "1628", "22/1628@7E1"),
+        TransCandidate("7E0", "22", "1628", "1628", "22/1628@7E0"),
+    )
+
+    /** Build a polling definition from a detected candidate. */
+    fun defFor(
+        candidate: TransCandidate,
+        id: String,
+        label: String,
+        warnF: Float,
+        critF: Float,
+    ): PidDef = PidDef(
+        id = id,
+        label = label,
+        mode = candidate.mode,
+        pid = candidate.pid,
+        header = candidate.header,
+        unit = "°F",
+        warnF = warnF,
+        critF = critF,
+    )
+
+    /**
+     * Decode a transmission-temperature payload.
+     * kind 1627/1628: (A*459/255)+(B*1.6/255)-40 °F.
+     * kind 82: Mode 21 PID 82 carries ATF1 (A,B) then ATF2 (C,D) as °C*10.
+     */
+    fun decodeTrans(kind: String, bytes: ByteArray): Float? = when (kind) {
+        "1627", "1628" -> {
+            if (bytes.size < 2) null
+            else {
+                val a = bytes[0].toInt() and 0xFF
+                val b = bytes[1].toInt() and 0xFF
+                (a * 459f / 255f) + (b * 1.6f / 255f) - 40f
+            }
+        }
+        "82" -> {
+            if (bytes.size < 4) null
+            else {
+                val a = bytes[0].toInt() and 0xFF
+                val b = bytes[1].toInt() and 0xFF
+                val raw = (a * 256 + b) * 0.07f
+                val c = (raw - 400f) / 10f // °C
+                c * 9f / 5f + 32f
+            }
+        }
+        else -> null
+    }
+
     /** Decode raw ECU bytes to °F (or rpm/mph). Returns null when unsupported. */
     fun decode(def: PidDef, bytes: ByteArray): Float? {
         if (bytes.size < 1) return null

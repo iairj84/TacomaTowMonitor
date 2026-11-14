@@ -15,6 +15,10 @@ class Elm327Client(
 ) {
     private var currentHeader: String? = null
     @Volatile private var open = false
+    @Volatile private var protocol = "?"
+
+    /** Which ELM protocol is in force ("6" = CAN 11/500, "0" = auto). */
+    fun activeProtocol(): String = protocol
     @Volatile private var transportOpened = false
 
     /** False means we never even got a byte pipe — very different from a silent dongle. */
@@ -41,7 +45,16 @@ class Elm327Client(
         transport.transact("ATL0", 2_000)
         transport.transact("ATS0", 2_000)
         transport.transact("ATH1", 2_000)
-        transport.transact("ATSP0", 3_000)
+        // Pin CAN 11-bit/500k — the 3rd-gen Tacoma bus. With auto protocol
+        // (ATSP0) these clones silently return NO DATA for the 0x701 header
+        // used by the transmission DID. Fall back to auto if SP6 is refused.
+        transport.transact("ATSP6", 3_000)
+        protocol = "6"
+        if (transport.transact("0100", 4_000).isNullOrBlank()) {
+            transport.transact("ATSP0", 3_000)
+            protocol = "0"
+            transport.transact("0100", 4_000)
+        }
 
         // Prove we can actually talk to the car, not just to the adapter.
         val ident = transport.transact("ATI", 3_000)
@@ -87,6 +100,35 @@ class Elm327Client(
             if (attempt == 0) Thread.sleep(120)
         }
         return null
+    }
+
+    /** Raw hex reply for an arbitrary header/command — used by PID detection. */
+    fun readRaw(header: String?, command: String, timeoutMs: Int = 3_500): String? {
+        if (!open) return null
+        setHeader(header)
+        return transport.transact(command, timeoutMs)
+    }
+
+    /**
+     * Payload bytes after the positive-response echo, for any mode:
+     * mode 22 -> "62"+pid, mode 21 -> "61"+pid, mode 01 -> "41"+pid.
+     */
+    fun payloadFor(command: String, response: String): ByteArray? {
+        val echo = when {
+            command.startsWith("22") -> "62" + command.substring(2)
+            command.startsWith("21") -> "61" + command.substring(2)
+            command.startsWith("01") -> "41" + command.substring(2)
+            else -> return null
+        }
+        val r = response.replace(" ", "")
+        if (r.contains("NODATA") || r.contains("ERROR") || r.contains("STOPPED") || r.contains("?")) return null
+        val idx = r.indexOf(echo)
+        if (idx < 0) return null
+        val hex = r.substring(idx + echo.length).takeWhile { it.isDigit() || it in 'A'..'F' }
+        if (hex.length < 2) return null
+        val out = ByteArray(hex.length / 2)
+        for (i in out.indices) out[i] = hex.substring(i * 2, i * 2 + 2).toInt(16).toByte()
+        return out
     }
 
     fun readVoltage(): Float? {

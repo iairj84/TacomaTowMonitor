@@ -59,6 +59,11 @@ class ObdRepository(
 
     private var client: Elm327Client? = null
     private var pollJob: Job? = null
+    /** Detected transmission definitions — replaced at connect time. */
+    private var panDef: PidDef = TacomaPids.TRANS_PAN
+    private var convDef: PidDef = TacomaPids.TRANS_CONVERTER
+    private val detectLog = mutableListOf<String>()
+    private var oilMisses = 0
     private var logFile: File? = null
     private var logDir: File? = null
 
@@ -130,7 +135,10 @@ class ObdRepository(
         onDone: (Boolean, String?) -> Unit = { _, _ -> },
     ) {
         stopPoll()
-        _state.update { it.copy(error = null, demoMode = false, deviceName = label) }
+        oilMisses = 0
+        _state.update {
+            it.copy(error = null, demoMode = false, deviceName = label, diagnostics = emptyList())
+        }
         scope.launch {
             val trail = mutableListOf<String>()
             var failed: Elm327Client? = null
@@ -200,22 +208,83 @@ class ObdRepository(
         }
     }
 
+    /**
+     * Ask the truck which ATF-temperature request it actually answers.
+     * Sends every candidate once and keeps the first that returns a
+     * believable temperature, so a wrong header degrades to the next guess
+     * instead of a permanently blank gauge.
+     */
+    private suspend fun detectTransmission(c: Elm327Client) {
+        detectLog.clear()
+        panDef = TacomaPids.TRANS_PAN
+        convDef = TacomaPids.TRANS_CONVERTER
+        detectLog.add("protocol: ATSP${c.activeProtocol()}")
+
+        for (cand in TacomaPids.TRANS_CANDIDATES) {
+            val cmd = cand.mode + cand.pid
+            val raw = withContext(Dispatchers.IO) {
+                try { c.readRaw(cand.header, cmd) } catch (_: Exception) { null }
+            }
+            val bytes = raw?.let { c.payloadFor(cmd, it) }
+            val f = bytes?.let { TacomaPids.decodeTrans(cand.kind, it) }
+            detectLog.add(
+                "pan ${cand.label}: ${raw?.take(40) ?: "<no reply>"} -> " +
+                    (f?.let { "%.0f°F".format(it) } ?: "-")
+            )
+            if (f != null && f > 20f && f < 400f) {
+                panDef = TacomaPids.defFor(cand, "trans_pan", "Trans Pan", 220f, 240f)
+                detectLog.add("pan: using ${cand.label}")
+                break
+            }
+            delay(120)
+        }
+
+        for (cand in TacomaPids.CONVERTER_CANDIDATES) {
+            val cmd = cand.mode + cand.pid
+            val raw = withContext(Dispatchers.IO) {
+                try { c.readRaw(cand.header, cmd) } catch (_: Exception) { null }
+            }
+            val bytes = raw?.let { c.payloadFor(cmd, it) }
+            val f = bytes?.let { TacomaPids.decodeTrans(cand.kind, it) }
+            detectLog.add(
+                "conv ${cand.label}: ${raw?.take(40) ?: "<no reply>"} -> " +
+                    (f?.let { "%.0f°F".format(it) } ?: "-")
+            )
+            if (f != null && f > 20f && f < 400f) {
+                convDef = TacomaPids.defFor(cand, "trans_conv", "T-Conv Out", 230f, 250f)
+                detectLog.add("conv: using ${cand.label}")
+                break
+            }
+            delay(120)
+        }
+        _state.update { it.copy(diagnostics = it.diagnostics + detectLog) }
+    }
+
     private fun startPoll(c: Elm327Client) {
         pollJob?.cancel()
         pollJob = scope.launch {
+            detectTransmission(c)
             // BLE clones lose the odd reply. A single miss must never wipe a
             // gauge the driver is watching, so keep the last good value and
             // mark it HOLD until it goes properly stale.
             val lastGood = mutableMapOf<String, Pair<Float, Long>>()
             while (isActive && c.isConnected()) {
                 val out = mutableMapOf<String, GaugeReading>()
-                for (def in TacomaPids.ALL) {
+                // Transmission definitions are whatever detection found.
+                val pollList = listOf(panDef, convDef, TacomaPids.COOLANT, TacomaPids.OIL, TacomaPids.RPM, TacomaPids.SPEED)
+                for (def in pollList) {
                     if (!isActive) break
                     val v = withContext(Dispatchers.IO) {
                         try { c.readPid(def) } catch (_: Exception) { null }
                     }
                     val now = System.currentTimeMillis()
                     if (v != null) lastGood[def.id] = v to now
+                    // Engine oil temp is simply absent on most 2GR-FKS ECUs;
+                    // stop showing a dead card once that is established.
+                    if (def.id == "oil") {
+                        if (v == null) oilMisses++ else oilMisses = 0
+                        if (oilMisses >= 2) continue
+                    }
                     out[def.id] = readingFor(def, v, lastGood[def.id], now)
                     delay(150) // BLE needs a beat between header flips
                 }
