@@ -27,6 +27,8 @@ data class AdapterReport(
     val identity: String?,
     val protocol: String?,
     val probes: List<Pair<String, String?>>,
+    /** Classified silicon, so "can it be reflashed?" has an answer. */
+    val firmware: FirmwareInfo? = null,
 ) {
     companion object {
         fun notConnected() = AdapterReport(

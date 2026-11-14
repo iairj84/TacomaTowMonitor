@@ -521,6 +521,32 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
+                report.firmware?.let { fw ->
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "CHIP",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        fw.title,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        fw.explanation,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        (if (fw.reflashable) "Reflashable in principle — " else "Not reflashable — ") + fw.advice,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (fw.reflashable) palette.warn else palette.crit,
+                    )
+                }
+
                 TextButton(onClick = { showProbes = !showProbes }) {
                     Text(if (showProbes) "Hide probe details" else "Show probe details")
                 }

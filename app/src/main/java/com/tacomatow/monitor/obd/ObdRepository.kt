@@ -276,12 +276,15 @@ class ObdRepository(
             suspend fun ask(header: String?, cmd: String, ms: Int = 4_000): String? =
                 runBlockingProbe(c, header, cmd, ms)
             val identity = ask(null, "ATI", 2_500)
+            val description = ask(null, "AT@1", 2_500)
             val protocol = ask(null, "ATDPN", 2_500)
             val baseline = ask(null, "0100", 4_000)
             val session = ask(null, "1003", 2_500)
             val trans = ask("701", "221627", 4_000)
             val body = ask("750", "2114", 3_000)
+            val firmware = AdapterFirmware.classify(identity, description)
             return AdapterCheck.evaluate(identity, protocol, baseline, session, trans, body)
+                .copy(firmware = firmware)
         } finally {
             if (_state.value.connected) startPoll(c)
         }
