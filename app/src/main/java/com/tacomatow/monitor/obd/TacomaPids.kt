@@ -91,6 +91,11 @@ object TacomaPids {
 
     val TRANS_CANDIDATES = listOf(
         TransCandidate("701", "22", "1627", "1627", "22/1627@701"),
+        // ScanGauge's published 2016+ Tacoma 3.5L X-Gauges use these DIDs
+        // (TXD 0701221AAA / 0701221AC0) instead of 1627/1628. Owners disagree
+        // about which set a given calibration answers, so probe both.
+        TransCandidate("701", "22", "1AAA", "1AAA", "22/1AAA@701"),
+        TransCandidate("7E0", "22", "1AAA", "1AAA", "22/1AAA@7E0"),
         TransCandidate("700", "22", "1627", "1627", "22/1627@700"),
         TransCandidate("7E1", "22", "1627", "1627", "22/1627@7E1"),
         TransCandidate("7E0", "22", "1627", "1627", "22/1627@7E0"),
@@ -101,6 +106,8 @@ object TacomaPids {
 
     val CONVERTER_CANDIDATES = listOf(
         TransCandidate("701", "22", "1628", "1628", "22/1628@701"),
+        TransCandidate("701", "22", "1AC0", "1AC0", "22/1AC0@701"),
+        TransCandidate("7E0", "22", "1AC0", "1AC0", "22/1AC0@7E0"),
         TransCandidate("700", "22", "1628", "1628", "22/1628@700"),
         TransCandidate("7E1", "22", "1628", "1628", "22/1628@7E1"),
         TransCandidate("7E0", "22", "1628", "1628", "22/1628@7E0"),
@@ -130,7 +137,9 @@ object TacomaPids {
      * kind 82: Mode 21 PID 82 carries ATF1 (A,B) then ATF2 (C,D) as °C*10.
      */
     fun decodeTrans(kind: String, bytes: ByteArray): Float? = when (kind) {
-        "1627", "1628" -> {
+        // 1AAA/1AC0 decode identically: (A*9/5)-40 °F when B is padding, which
+        // is exactly what ScanGauge's MTH 0009 0005 FFD8 computes.
+        "1627", "1628", "1AAA", "1AC0" -> {
             if (bytes.size < 2) null
             else {
                 val a = bytes[0].toInt() and 0xFF
