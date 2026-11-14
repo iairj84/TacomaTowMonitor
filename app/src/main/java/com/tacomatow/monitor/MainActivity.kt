@@ -176,6 +176,20 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // Check GitHub once per launch. A failure here must never get in the way
+        // of connecting to the truck, so it degrades to a quiet line of text.
+        var update by remember { mutableStateOf<com.tacomatow.monitor.update.AppRelease?>(null) }
+        var updateMsg by remember { mutableStateOf<String?>(null) }
+        var downloading by remember { mutableStateOf(false) }
+        var downloaded by remember { mutableStateOf<java.io.File?>(null) }
+        LaunchedEffect(Unit) {
+            when (val r = com.tacomatow.monitor.update.UpdateChecker.check(BuildConfig.VERSION_NAME)) {
+                is com.tacomatow.monitor.update.CheckResult.Available -> update = r.release
+                is com.tacomatow.monitor.update.CheckResult.Failed -> updateMsg = r.reason
+                com.tacomatow.monitor.update.CheckResult.UpToDate -> Unit
+            }
+        }
+
         Column(
             Modifier
                 .fillMaxSize()
@@ -189,6 +203,45 @@ class MainActivity : ComponentActivity() {
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 16.dp),
             ) {
+                update?.let { rel ->
+                    UpdateBanner(
+                        release = rel,
+                        notes = rel.notes,
+                        downloading = downloading,
+                        downloaded = downloaded != null,
+                        onDownload = {
+                            downloading = true
+                            updateMsg = null
+                            scope.launch {
+                                try {
+                                    downloaded = com.tacomatow.monitor.update.UpdateChecker
+                                        .download(this@MainActivity, rel)
+                                } catch (e: Exception) {
+                                    updateMsg = e.message ?: "Download failed."
+                                }
+                                downloading = false
+                            }
+                        },
+                        onInstall = {
+                            downloaded?.let {
+                                com.tacomatow.monitor.update.UpdateChecker
+                                    .install(this@MainActivity, it)
+                            }
+                        },
+                        onDismiss = { update = null },
+                    )
+                    Spacer(Modifier.height(10.dp))
+                }
+
+                updateMsg?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 8.dp),
+                    )
+                }
+
                 ConnectionPanel(
                     state = state,
                     lastName = lastName,
@@ -260,7 +313,22 @@ class MainActivity : ComponentActivity() {
 
                 if (state.triedConnect) {
                     Spacer(Modifier.height(10.dp))
-                    AdapterLog(state.diagnostics)
+                    AdapterLog(
+                        lines = state.diagnostics,
+                        shareText = {
+                            AdapterLogShare.build(
+                                versionName = BuildConfig.VERSION_NAME,
+                                versionCode = BuildConfig.VERSION_CODE,
+                                adapterName = state.deviceName,
+                                connected = state.connected,
+                                protocol = state.diagnostics
+                                    .firstOrNull { it.startsWith("protocol:") }
+                                    ?.removePrefix("protocol:")?.trim(),
+                                voltage = state.voltage,
+                                lines = state.diagnostics,
+                            )
+                        },
+                    )
                 }
 
                 Spacer(Modifier.height(6.dp))
@@ -825,9 +893,67 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Update prompt. Shown only when GitHub reports a higher version, so a
+     * normal launch stays quiet.
+     */
     @Composable
-    private fun AdapterLog(lines: List<String>) {
+    private fun UpdateBanner(
+        release: com.tacomatow.monitor.update.AppRelease,
+        notes: String,
+        downloading: Boolean,
+        downloaded: Boolean,
+        onDownload: () -> Unit,
+        onInstall: () -> Unit,
+        onDismiss: () -> Unit,
+    ) {
+        val palette = LocalTowPalette.current
+        val summary = remember(notes) {
+            notes.lineSequence()
+                .map { it.trim().removePrefix("-").trim() }
+                .firstOrNull { it.isNotEmpty() && !it.startsWith("#") }
+                ?.take(160)
+        }
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            modifier = Modifier.fillMaxWidth(),
+            border = androidx.compose.foundation.BorderStroke(1.dp, palette.warn),
+        ) {
+            Column(Modifier.padding(14.dp)) {
+                Text(
+                    "UPDATE AVAILABLE · v${release.version}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = palette.warn,
+                )
+                summary?.let {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = if (downloaded) onInstall else onDownload, enabled = !downloading) {
+                        Text(
+                            when {
+                                downloading -> "Downloading…"
+                                downloaded -> "Install"
+                                else -> "Download"
+                            },
+                        )
+                    }
+                    TextButton(onClick = onDismiss, enabled = !downloading) { Text("Later") }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun AdapterLog(lines: List<String>, shareText: () -> String) {
         var open by remember { mutableStateOf(false) }
+        var copied by remember { mutableStateOf(false) }
         Card(
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             modifier = Modifier.fillMaxWidth(),
@@ -843,6 +969,19 @@ class MainActivity : ComponentActivity() {
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f),
                     )
+                    TextButton(
+                        onClick = {
+                            AdapterLogShare.copy(this@MainActivity, shareText())
+                            copied = true
+                        },
+                    ) {
+                        Text(if (copied) "Copied" else "Copy")
+                    }
+                    TextButton(
+                        onClick = { AdapterLogShare.share(this@MainActivity, shareText()) },
+                    ) {
+                        Text("Share")
+                    }
                     OutlinedButton(onClick = { open = !open }) {
                         Text(if (open) "Hide" else "Show")
                     }

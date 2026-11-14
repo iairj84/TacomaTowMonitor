@@ -114,3 +114,23 @@ app/.../car/                   AA service + 5 s Pane screen
 ```
 
 Tow safe. Watch the pan on long grades — that A/T will thank you.
+
+## Self-updates
+
+On launch the app asks GitHub for the latest release of this repository and, if
+the tag is newer than the installed `versionName`, shows an **UPDATE AVAILABLE**
+card with a Download button. The APK is fetched into the app cache and handed to
+the system installer via a `FileProvider` scoped to `cache/updates/` only; the
+first install from the app needs "install unknown apps" allowed for this app.
+
+This reads the public GitHub API, so **the repository has to be public** for the
+check to work. On a private repository the API answers `404` and the app says so
+in a single muted line instead of failing silently. There is no embedded token,
+by design: a token shipped in an APK is not a secret.
+
+## Sharing the adapter log
+
+The adapter log card has **Copy** and **Share** buttons. Both produce the same
+text: app version and build, phone model and Android version, adapter name and
+connection state, protocol, adapter voltage, then the log lines verbatim. A bare
+`NO DATA` line is useless without that header, so the context travels with it.
