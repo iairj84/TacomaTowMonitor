@@ -12,7 +12,9 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -37,10 +39,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.tacomatow.monitor.obd.GaugeReading
 import com.tacomatow.monitor.obd.ObdForegroundService
 import com.tacomatow.monitor.obd.ObdHolder
 import com.tacomatow.monitor.obd.ObdUiState
@@ -201,10 +207,132 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** Status colour for a gauge: calm green, hot amber, critical red, muted grey. */
+    private fun statusColor(status: String?): Color = when (status) {
+        "CRIT" -> Color(0xFFC62828)
+        "WARN" -> Color(0xFFB26A00)
+        "HOLD" -> Color(0xFF6A6A6A)
+        "NO DATA" -> Color(0xFF9E9E9E)
+        else -> Color(0xFF2E7D32)
+    }
+
+    private fun statusWord(status: String?): String = when (status) {
+        "CRIT" -> "CRITICAL — STOP AND COOL"
+        "WARN" -> "HOT — EASE OFF"
+        "HOLD" -> "HOLDING"
+        "NO DATA" -> "NO DATA"
+        else -> "OK"
+    }
+
+    /** Background tint that reads at a glance from the driver's seat. */
+    private fun statusTint(status: String?): Color = when (status) {
+        "CRIT" -> Color(0xFFFBE3E3)
+        "WARN" -> Color(0xFFFFF1D6)
+        "HOLD" -> Color(0xFFEFEFEF)
+        "NO DATA" -> Color(0xFFF2F2F2)
+        else -> Color(0xFFE8F3E8)
+    }
+
+    /**
+     * A single tow gauge. [hero] makes the transmission temps enormous —
+     * they are the numbers being watched while dragging a trailer, so the
+     * value dominates and the bar shows position between cold and critical.
+     */
+    @Composable
+    private fun TowGauge(
+        g: GaugeReading?,
+        title: String,
+        warnF: Float,
+        critF: Float,
+        hero: Boolean = false,
+    ) {
+        val value = g?.valueF
+        val status = g?.status
+        val numberSize = if (hero) MaterialTheme.typography.displayLarge else MaterialTheme.typography.headlineMedium
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = statusTint(status)),
+        ) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = if (hero) 14.dp else 10.dp)) {
+                Text(title.uppercase(), style = MaterialTheme.typography.labelMedium, color = Color(0xFF4A4A4A))
+                Row(verticalAlignment = androidx.compose.ui.Alignment.Bottom) {
+                    Text(
+                        text = value?.let { "%.0f".format(it) } ?: "—",
+                        style = numberSize,
+                        color = if (value == null) Color(0xFF9E9E9E) else statusColor(status),
+                    )
+                    Text(
+                        text = " °F",
+                        style = if (hero) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFF5A5A5A),
+                        modifier = Modifier.padding(bottom = if (hero) 8.dp else 3.dp),
+                    )
+                    Spacer(Modifier.weight(1f))
+                    if (hero) {
+                        Text(
+                            statusWord(status),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = statusColor(status),
+                        )
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                // Scale runs 100°F (cold) to crit+20 (danger).
+                val span = (critF + 20f) - 100f
+                val frac = value?.let { ((it - 100f) / span).coerceIn(0f, 1f) } ?: 0f
+                val track = if (hero) 12.dp else 6.dp
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(track)
+                        .clip(RoundedCornerShape(track / 2))
+                        .background(Color(0x22000000)),
+                ) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth(frac)
+                            .height(track)
+                            .clip(RoundedCornerShape(track / 2))
+                            .background(statusColor(status)),
+                    )
+                }
+                if (hero) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("100", style = MaterialTheme.typography.labelSmall, color = Color(0xFF6A6A6A))
+                        Text("warn %.0f".format(warnF), style = MaterialTheme.typography.labelSmall, color = Color(0xFF6A6A6A))
+                        Text("crit %.0f".format(critF), style = MaterialTheme.typography.labelSmall, color = Color(0xFF6A6A6A))
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun CompactGauge(g: GaugeReading?, modifier: Modifier = Modifier) {
+        val value = g?.valueF
+        Card(
+            modifier = modifier,
+            colors = CardDefaults.cardColors(containerColor = statusTint(g?.status)),
+        ) {
+            Column(Modifier.padding(12.dp)) {
+                Text((g?.label ?: "—").uppercase(), style = MaterialTheme.typography.labelSmall, color = Color(0xFF4A4A4A))
+                Text(
+                    value?.let { if (g?.unit == "rpm") it.toInt().toString() else "%.0f".format(it) } ?: "—",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = when {
+                        value == null -> Color(0xFF9E9E9E)
+                        g?.status == "CRIT" -> Color(0xFFC62828)
+                        g?.status == "WARN" -> Color(0xFFB26A00)
+                        else -> Color(0xFF1B1B1B)
+                    },
+                )
+                Text(g?.unit ?: "", style = MaterialTheme.typography.labelSmall, color = Color(0xFF6A6A6A))
+            }
+        }
+    }
+
     @Composable
     private fun GaugeGrid(state: ObdUiState) {
-        val order = listOf("trans_pan", "trans_conv", "coolant", "oil", "rpm", "speed")
-        val cards = order.mapNotNull { state.readings[it] }
         if (!state.connected) {
             Card {
                 Text(
@@ -215,54 +343,37 @@ class MainActivity : ComponentActivity() {
             }
             return
         }
-        if (cards.isEmpty()) {
-            Text("Talking to the adapter… first sweep takes a few seconds (header flips to 701 for trans temps).")
+        val pan = state.readings["trans_pan"]
+        val conv = state.readings["trans_conv"]
+        if (pan == null && conv == null) {
+            Text("Talking to the adapter… first sweep takes a few seconds (transmission request detection runs first).")
             return
         }
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            cards.forEach { g ->
-                val bg = when (g.status) {
-                    "CRIT" -> Color(0xFFF8D7DA)
-                    "WARN" -> Color(0xFFFFF3CD)
-                    else -> null
-                }
-                Card(colors = if (bg != null) CardDefaults.cardColors(containerColor = bg) else CardDefaults.cardColors()) {
-                    Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Column {
-                            Text(g.label, style = MaterialTheme.typography.labelMedium)
-                            Text(
-                                g.valueF?.let { v ->
-                                    if (g.unit == "rpm") v.toInt().toString() else "%.0f".format(v)
-                                } ?: "—",
-                                style = MaterialTheme.typography.headlineMedium,
-                            )
-                        }
-                        Column {
-                            Text(g.unit, style = MaterialTheme.typography.bodyMedium)
-                            Text(
-                                when (g.status) {
-                                    "CRIT" -> "CRITICAL"
-                                    "WARN" -> "HOT"
-                                    "HOLD" -> "HOLDING"
-                                    "NO DATA" -> "NO DATA"
-                                    else -> if (g.valueF == null) "" else "OK"
-                                },
-                                color = when (g.status) {
-                                    "CRIT" -> Color(0xFFB3261E)
-                                    "WARN" -> Color(0xFF8A6D00)
-                                    "HOLD" -> Color(0xFF6A6A6A)
-                                    "NO DATA" -> Color.Gray
-                                    else -> Color(0xFF2E7D32)
-                                },
-                            )
-                        }
-                    }
-                }
+            // Transmission first: the two numbers that decide how hard you can pull.
+            TowGauge(pan, "Transmission pan", 220f, 240f, hero = true)
+            TowGauge(conv, "Torque converter out", 230f, 250f, hero = true)
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                CompactGauge(state.readings["coolant"], Modifier.weight(1f))
+                CompactGauge(state.readings["rpm"], Modifier.weight(1f))
             }
-            Text("Adapter ${state.voltage?.let { "%.1fV".format(it) } ?: ""} · updated ${state.lastUpdateMs.takeIf { it > 0 }?.let { android.text.format.DateFormat.format("HH:mm:ss", it) } ?: "—"}",
-                style = MaterialTheme.typography.bodySmall)
-            Text("Tow rule of thumb: pan >220°F back off, >240°F stop and cool. Converter runs hotter — watch the spread under load.",
-                style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                CompactGauge(state.readings["oil"], Modifier.weight(1f))
+                CompactGauge(state.readings["speed"], Modifier.weight(1f))
+            }
+
+            Text(
+                "Adapter ${state.voltage?.let { "%.1fV".format(it) } ?: ""} · updated " +
+                    (state.lastUpdateMs.takeIf { it > 0 }
+                        ?.let { android.text.format.DateFormat.format("HH:mm:ss", it) } ?: "—"),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                "Pan past 220°F: back off the throttle. Past 240°F: pull over and idle to cool. " +
+                    "The converter always runs hotter — watch the gap widen on a long grade.",
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
     }
 
