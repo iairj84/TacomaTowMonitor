@@ -267,16 +267,24 @@ class BleTransport(
                 }
                 writeChar = cand.write
                 Thread.sleep(250)
-                val probe = transact("AT", 2_500)?.trim()
+                var probe = transact("AT", 2_500)?.trim()
+                // Silence right after subscribing is usually the clone waking
+                // up, not a dead channel — one retry before judging it.
+                if (probe.isNullOrEmpty()) {
+                    Thread.sleep(400)
+                    probe = transact("AT", 2_500)?.trim()
+                }
                 note("ble: #$idx probe -> ${probe?.take(40) ?: "<silence>"}")
                 // "?" means the dongle heard something it could not parse, so
-                // this channel is not the UART. Keep it only as a last resort.
+                // this channel is not the UART.
                 if (probe != null && probe.isNotEmpty() && probe != "?") {
                     stage = "ready"
                     note("ble: using ${cand.label}")
                     return true
                 }
-                if (probe != null && probe.isNotEmpty() && fallback == null) {
+                // Silence beats "?" as a fallback: a quiet channel may still
+                // answer OBD requests, a channel that says "?" cannot.
+                if (probe.isNullOrEmpty() && fallback == null) {
                     fallback = cand
                 }
             }

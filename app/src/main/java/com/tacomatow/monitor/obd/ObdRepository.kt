@@ -398,9 +398,15 @@ class ObdRepository(
             val session = ask(null, "1003", 2_500)
             val trans = ask("701", "221627", 4_000)
             val body = ask("750", "2114", 3_000)
+            // Ask the baseline again AFTER the manufacturer probes. Some clones
+            // wedge on mode 21/22 and stop answering anything for a few seconds,
+            // which made this check blame the connection. Comparing before and
+            // after proves it.
+            val baselineAfter = ask(null, "0100", 4_000)
             val firmware = AdapterFirmware.classify(identity, description)
-            return AdapterCheck.evaluate(identity, protocol, baseline, session, trans, body)
-                .copy(firmware = firmware)
+            return AdapterCheck.evaluate(
+                identity, protocol, baseline, session, trans, body, baselineAfter,
+            ).copy(firmware = firmware)
         } finally {
             if (_state.value.connected) startPoll(c)
         }

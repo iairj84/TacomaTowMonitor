@@ -20,6 +20,9 @@ enum class AdapterVerdict {
 
     /** The adapter was left mid-auto-search, so every request came back empty. */
     ADAPTER_SEARCHING,
+
+    /** Baseline works, then stops working right after a manufacturer request. */
+    ADAPTER_LOCKS_ON_MANUFACTURER,
 }
 
 data class AdapterReport(
@@ -57,6 +60,7 @@ object AdapterCheck {
         sessionRaw: String?,
         transRaw: String?,
         bodyRaw: String?,
+        baselineAfterRaw: String? = null,
     ): AdapterReport {
         val baseline = norm(baselineRaw)
         val session = norm(sessionRaw)
@@ -113,6 +117,31 @@ object AdapterCheck {
                 ),
                 identity = identity, protocol = protocol, probes = probes,
             )
+        }
+
+        // 1b. Baseline worked, then stopped working immediately after a
+        //     manufacturer request: the adapter itself is what died, briefly.
+        if (baselineAfterRaw != null) {
+            val after = norm(baselineAfterRaw)
+            val afterWorks = after.contains("4100")
+            val transSilent = !transNegative && !transAnswered
+            val bodySilent = !bodyNegative && !bodyAnswered
+            if (!afterWorks && after.isNotEmpty() && transSilent && bodySilent) {
+                return AdapterReport(
+                    verdict = AdapterVerdict.ADAPTER_LOCKS_ON_MANUFACTURER,
+                    headline = "The adapter stops answering after a manufacturer request",
+                    detail = "Basic data worked. Then the transmission request went out, and the " +
+                        "very next basic request came back empty too. The clone locks up on mode " +
+                        "21/22 for a few seconds — which is why the dashboard looks dead one moment " +
+                        "and reads coolant the next.",
+                    steps = listOf(
+                        "Watch it recover on its own: coolant and RPM return within a few seconds.",
+                        "This is the clone's limit, not your truck's — it never emits a refusal (7F), it just goes quiet.",
+                        "Transmission temperatures need an adapter that handles manufacturer requests: OBDLink MX+ (best) or a Veepeak BLE (~$15) to try cheaply.",
+                    ),
+                    identity = identity, protocol = protocol, probes = probes,
+                )
+            }
         }
 
         // 2. Extended reads work: the good outcome.

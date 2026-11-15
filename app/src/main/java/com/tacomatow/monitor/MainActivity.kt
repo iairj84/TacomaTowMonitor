@@ -538,7 +538,8 @@ class MainActivity : ComponentActivity() {
         val accent = when (report?.verdict) {
             com.tacomatow.monitor.obd.AdapterVerdict.EXTENDED_OK -> palette.ok
             com.tacomatow.monitor.obd.AdapterVerdict.ECU_REFUSED,
-            com.tacomatow.monitor.obd.AdapterVerdict.ADAPTER_SEARCHING -> palette.warn
+            com.tacomatow.monitor.obd.AdapterVerdict.ADAPTER_SEARCHING,
+            com.tacomatow.monitor.obd.AdapterVerdict.ADAPTER_LOCKS_ON_MANUFACTURER -> palette.warn
             com.tacomatow.monitor.obd.AdapterVerdict.SESSION_REFUSED,
             com.tacomatow.monitor.obd.AdapterVerdict.ADAPTER_LIMITED,
             com.tacomatow.monitor.obd.AdapterVerdict.BASELINE_FAILED -> palette.crit
