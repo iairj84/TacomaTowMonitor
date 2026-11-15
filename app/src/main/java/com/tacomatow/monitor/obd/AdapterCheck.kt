@@ -137,7 +137,7 @@ object AdapterCheck {
                     steps = listOf(
                         "Watch it recover on its own: coolant and RPM return within a few seconds.",
                         "This is the clone's limit, not your truck's — it never emits a refusal (7F), it just goes quiet.",
-                        "Transmission temperatures need an adapter that handles manufacturer requests: OBDLink MX+ (best) or a Veepeak BLE (~$15) to try cheaply.",
+                        "Transmission temperatures need an adapter that handles manufacturer requests: OBDLink MX+ (best) or Veepeak OBDCheck BLE (~$32) as the cheaper try.",
                     ),
                     identity = identity, protocol = protocol, probes = probes,
                 )
@@ -202,7 +202,7 @@ object AdapterCheck {
                 "reassembles replies from the engine pair.",
             steps = listOf(
                 "Confirm in the adapter log that every probe says NO DATA (not a negative response).",
-                "A cheap Veepeak BLE (~$15, returnable) is worth one try before spending more.",
+                "Veepeak OBDCheck BLE (~$32, 30-day money back) is the cheapest adapter still worth a try before spending more.",
                 "Known-good on 3rd-gen Tacomas: Kiwi 3 or OBDLink MX+ (~$100).",
                 "Your current dongle still handles coolant, RPM, speed and trip logging.",
             ),
