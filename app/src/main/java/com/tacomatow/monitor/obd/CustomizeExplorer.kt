@@ -131,7 +131,41 @@ object CustomizeExplorer {
 
 /** One byte position that moved between two snapshots of the same block. */
 data class ByteChange(val index: Int, val before: String, val after: String) {
-    fun describe(): String = "byte $index: $before → $after"
+
+    private val fromValue: Int? get() = before.toIntOrNull(16)
+    private val toValue: Int? get() = after.toIntOrNull(16)
+
+    /**
+     * Bit positions that differ, LSB first.
+     *
+     * Several Toyota customizations share one byte, so "26 -> 27" on its own
+     * cannot say which option moved. "bit 0" can. Numbering is LSB = bit 0,
+     * the convention Toyota's bitfields are documented in.
+     */
+    val changedBits: List<Int>
+        get() {
+            val a = fromValue ?: return emptyList()
+            val b = toValue ?: return emptyList()
+            val diff = a xor b
+            return (0..7).filter { diff and (1 shl it) != 0 }
+        }
+
+    /** "00100110 -> 00100111", or null when a byte is missing. */
+    fun binaryText(): String? {
+        val a = fromValue ?: return null
+        val b = toValue ?: return null
+        return "${a.toString(2).padStart(8, '0')} → ${b.toString(2).padStart(8, '0')}"
+    }
+
+    fun describe(): String {
+        val bits = changedBits
+        val suffix = when (bits.size) {
+            0 -> ""
+            1 -> "  (bit ${bits.first()})"
+            else -> "  (bits ${bits.joinToString(", ")})"
+        }
+        return "byte $index: $before → $after$suffix"
+    }
 }
 
 /** A block whose payload moved between two snapshots. */

@@ -746,6 +746,13 @@ private fun ChangeRow(change: BlockChange) {
                 style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                 color = MaterialTheme.colorScheme.primary,
             )
+            b.binaryText()?.let { bits ->
+                Text(
+                    bits,
+                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }

@@ -111,8 +111,24 @@ data class ChangeRecord(
     }
 
     val displayLid: String get() = "0x%02X".format(lid)
-    fun describe(): String =
-        "$displayLid · $ecuLabel — byte $byteIndex: $before → $after"
+    /** Bits that differ, derived from the stored values (LSB = bit 0). */
+    val changedBits: List<Int>
+        get() {
+            val a = before.toIntOrNull(16) ?: return emptyList()
+            val b = after.toIntOrNull(16) ?: return emptyList()
+            val diff = a xor b
+            return (0..7).filter { diff and (1 shl it) != 0 }
+        }
+
+    fun describe(): String {
+        val bits = changedBits
+        val suffix = when (bits.size) {
+            0 -> ""
+            1 -> "  (bit ${bits.first()})"
+            else -> "  (bits ${bits.joinToString(", ")})"
+        }
+        return "$displayLid · $ecuLabel — byte $byteIndex: $before → $after$suffix"
+    }
 }
 
 /** Append-only list of named changes, so settings stay distinguishable. */
