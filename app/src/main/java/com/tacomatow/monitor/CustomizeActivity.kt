@@ -292,8 +292,8 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                         Text(
                             "Asks the body ECU (0x750), combination meter (0x7C0), A/C amplifier (0x7C4) " +
                                 "and smart-key ECU (0x7C6) which customization blocks they expose, using " +
-                                "Toyota's local-identifier read (21 <LID>). These are the blocks Carista " +
-                                "changes for chimes, locks and light delays.",
+                                "Toyota's local-identifier read (21 <LID>). These are the blocks a " +
+                                "dealer tool changes for chimes, locks and light delays.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

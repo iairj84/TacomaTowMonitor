@@ -5,7 +5,8 @@ package com.tacomatow.monitor.obd
  *
  * The body and combination-meter ECUs expose their customization blocks
  * through Toyota's legacy local-identifier services: `21 <LID>` reads a
- * block, `3B <LID> <data>` writes one. Carista replays exactly these.
+ * block, `3B <LID> <data>` writes one. Dealer diagnostic tools replay
+ * exactly these.
  *
  * LIDs and bit layouts are model-specific and Toyota does not publish
  * them, so this class deliberately does the safe half only: it asks each
