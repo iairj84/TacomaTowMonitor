@@ -128,6 +128,41 @@ check to work. On a private repository the API answers `404` and the app says so
 in a single muted line instead of failing silently. There is no embedded token,
 by design: a token shipped in an APK is not a secret.
 
+## Where the data comes from (and what this is not)
+
+This project is independent. It is not affiliated with, endorsed by, sponsored
+by, or derived from Toyota or any commercial diagnostic product, and it ships no
+third-party table, database or extracted asset.
+
+**What it does.** It talks to the owner's own vehicle over the standard
+diagnostic connector using published standards: SAE J1979 for modes 01 and 09,
+and the ISO 15765 / ISO 14229 service families for the Toyota local-identifier
+reads (`21 <LID>`) used by the customize explorer. No protection measure is
+circumvented and no system the owner does not own is accessed. The app never
+writes to the vehicle.
+
+**Where mappings come from.** A block is read, the owner changes one setting
+using whatever they already have (the factory radio's own customization menu, a
+dealer tool, or a phone app they paid for), the block is read again, and the two
+are diffed. The artefact is the owner's measurement of their own property: a
+label, an ECU address, a byte index, and the values either side. Every entry is
+stamped with model year, trim and calibration so another owner can judge whether
+it applies to their truck.
+
+**What is deliberately absent.** No vendor software was decompiled, no vendor
+database was extracted, and no proprietary table is reproduced here — not in the
+source, not in the build, not in the release notes. `CustomizeCatalogue.kt` is a
+checklist of settings a Tacoma exposes, written in this project's own wording;
+it contains no block or byte data and is not a payload table.
+
+**For contributors.** Only first-hand observations of a vehicle you have access
+to, with the year, trim and calibration recorded. Do not paste a vendor's table,
+screenshots of a vendor's UI, or anything extracted from vendor software; those
+pull requests are declined, not cleaned up.
+
+Product and company names remain the property of their owners and are used, when
+at all, only to describe compatibility.
+
 ## Releases — do this for every user-visible change
 
 The in-app updater only ever sees GitHub releases, so a version that is built but

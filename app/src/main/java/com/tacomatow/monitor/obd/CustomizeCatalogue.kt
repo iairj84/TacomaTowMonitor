@@ -10,7 +10,9 @@ package com.tacomatow.monitor.obd
  * that a setting exists says nothing about which block it lives in.
  *
  * Wording is deliberately this project's own shorthand rather than a copy of any
- * vendor's menu text.
+ * vendor's menu text. These are descriptions of what the vehicle can be
+ * configured to do — functional facts, not a payload table — and nothing here
+ * carries a block, byte or value that would need a vendor's data to produce.
  */
 data class CatalogSetting(
     val category: String,
