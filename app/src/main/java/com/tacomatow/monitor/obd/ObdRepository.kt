@@ -69,6 +69,21 @@ class ObdRepository(
     private var panDef: PidDef = TacomaPids.TRANS_PAN
     private var convDef: PidDef = TacomaPids.TRANS_CONVERTER
     private val detectLog = mutableListOf<String>()
+
+    /**
+     * Gentle session: one probe, no extended-session request, no protocol
+     * retry, slower polling. Aggressive manufacturer probing can leave a
+     * Toyota diagnostic gateway refusing traffic until the bus sleeps, so
+     * this keeps a session cheap for trucks that have already been kicked
+     * around by earlier attempts.
+     */
+    @Volatile private var gentle = false
+
+    fun setGentle(value: Boolean) {
+        gentle = value
+    }
+
+    fun isGentle(): Boolean = gentle
     private var oilMisses = 0
     private var logFile: File? = null
     private var logDir: File? = null
@@ -228,11 +243,54 @@ class ObdRepository(
      * believable temperature, so a wrong header degrades to the next guess
      * instead of a permanently blank gauge.
      */
+    /** One candidate probe, logging the reply. Null when nothing believable came back. */
+    private suspend fun probeTransCandidate(
+        c: Elm327Client,
+        cand: TacomaPids.TransCandidate,
+        id: String,
+        label: String,
+        warnF: Float,
+        critF: Float,
+    ): PidDef? {
+        val cmd = cand.mode + cand.pid
+        val raw = withContext(Dispatchers.IO) {
+            try { c.readRaw(cand.header, cmd, 3_000) } catch (_: Exception) { null }
+        }
+        val bytes = raw?.let { c.payloadFor(cmd, it) }
+        val f = bytes?.let { TacomaPids.decodeTrans(cand.kind, it) }
+        detectLog.add(
+            "${cand.label}: ${raw?.take(40) ?: "<no reply>"} -> " +
+                (f?.let { "%.0f°F".format(it) } ?: "-"),
+        )
+        return if (f != null && f > 20f && f < 400f) {
+            detectLog.add("using ${cand.label}")
+            TacomaPids.defFor(cand, id, label, warnF, critF)
+        } else {
+            null
+        }
+    }
+
     private suspend fun detectTransmission(c: Elm327Client) {
         detectLog.clear()
         panDef = TacomaPids.TRANS_PAN
         convDef = TacomaPids.TRANS_CONVERTER
         detectLog.add("protocol: ATSP${c.activeProtocol()}")
+
+        if (gentle) {
+            detectLog.add("gentle: single probe, no 10 03, no protocol retry")
+            val foundPan = probeTransCandidate(
+                c, TacomaPids.TRANS_CANDIDATES.first(), "trans_pan", "Trans Pan", 220f, 240f,
+            )
+            if (foundPan != null) {
+                panDef = foundPan
+                probeTransCandidate(
+                    c, TacomaPids.CONVERTER_CANDIDATES.first(), "trans_conv", "T-Conv Out", 230f, 250f,
+                )?.let { convDef = it }
+            }
+            _state.update { it.copy(diagnostics = it.diagnostics + detectLog) }
+            return
+        }
+
         // Manufacturer reads are frequently refused in the default session.
         val sessionOk = withContext(Dispatchers.IO) {
             try { c.enterExtendedSession() } catch (_: Exception) { false }
@@ -514,7 +572,7 @@ class ObdRepository(
                         if (oilMisses >= 2) continue
                     }
                     out[def.id] = readingFor(def, v, lastGood[def.id], now)
-                    delay(150) // BLE needs a beat between header flips
+                    delay(if (gentle) 350 else 150) // BLE needs a beat between header flips
                 }
                 val volts = withContext(Dispatchers.IO) {
                     try { c.readVoltage() } catch (_: Exception) { null }
@@ -528,7 +586,7 @@ class ObdRepository(
                     )
                 }
                 appendLog(out, volts)
-                delay(800)
+                delay(if (gentle) 1_500 else 800)
             }
             _state.update { it.copy(connected = false) }
         }

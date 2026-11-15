@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -40,6 +41,7 @@ import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
@@ -145,6 +147,8 @@ class MainActivity : ComponentActivity() {
         val scope = rememberCoroutineScope()
         val lastMac = remember { prefs.getString("last_mac", null) }
         val lastName = remember { prefs.getString("last_name", null) }
+        var gentle by remember { mutableStateOf(prefs.getBoolean("gentle_session", false)) }
+        LaunchedEffect(gentle) { ObdHolder.repository.setGentle(gentle) }
         var autoTried by remember { mutableStateOf(false) }
         val context = LocalContext.current
 
@@ -273,6 +277,15 @@ class MainActivity : ComponentActivity() {
                     Spacer(Modifier.height(8.dp))
                     NoticeCard(it)
                 }
+
+                Spacer(Modifier.height(8.dp))
+                GentleCard(
+                    enabled = gentle,
+                    onChange = {
+                        gentle = it
+                        prefs.edit().putBoolean("gentle_session", it).apply()
+                    },
+                )
 
                 Spacer(Modifier.height(10.dp))
                 AdapterVerdictPanel(
@@ -903,6 +916,39 @@ class MainActivity : ComponentActivity() {
      * loud: an empty gauge reads as "the app is broken", while 7F 22 31 is
      * proof the request arrived and the calibration simply has no such data.
      */
+    /**
+     * Gentle session toggle. Aggressive manufacturer probing can leave a Toyota
+     * gateway refusing traffic, so this keeps a session to one probe with no
+     * extended-session request and slower polling.
+     */
+    @Composable
+    private fun GentleCard(enabled: Boolean, onChange: (Boolean) -> Unit) {
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            modifier = Modifier.fillMaxWidth(),
+            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        ) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Gentle session", style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        "One probe, no extended-session request, no protocol retry, slower " +
+                            "polling. Use it when the truck has already stopped answering and " +
+                            "you want the lightest possible touch.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Switch(checked = enabled, onCheckedChange = onChange)
+            }
+        }
+    }
+
     @Composable
     private fun RefusalCard(refusals: List<String>) {
         val palette = LocalTowPalette.current
