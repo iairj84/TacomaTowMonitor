@@ -27,6 +27,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -56,6 +60,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.tacomatow.monitor.obd.BlockChange
 import com.tacomatow.monitor.obd.ChangeRecord
+import com.tacomatow.monitor.obd.CatalogSetting
+import com.tacomatow.monitor.obd.CustomizeCatalogue
 import com.tacomatow.monitor.obd.CustomizeExplorer
 import com.tacomatow.monitor.obd.CustomizeKnownBlocks
 import com.tacomatow.monitor.obd.CustomizeMapping
@@ -93,6 +99,7 @@ class CustomizeActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CustomizeScreen(onBack: () -> Unit) {
     val state by ObdHolder.repository.state.collectAsState()
@@ -119,8 +126,32 @@ private fun CustomizeScreen(onBack: () -> Unit) {
     val restored = remember { CustomizeSnapshotStore.load(context) }
     var snapshot by remember { mutableStateOf(restored) }
     var label by remember { mutableStateOf(restored?.label ?: "") }
+    var valueFrom by remember { mutableStateOf("") }
+    var valueTo by remember { mutableStateOf("") }
+    var picked by remember { mutableStateOf<CatalogSetting?>(null) }
+    var menuOpen by remember { mutableStateOf(false) }
     val records = remember {
         mutableStateListOf<ChangeRecord>().apply { addAll(CustomizeRecordStore.load(context)) }
+    }
+
+    /** Name as it will be stamped on the snapshot and on a record. */
+    fun composedLabel(): String {
+        val base = label.trim().ifBlank { "Unnamed change" }
+        val from = valueFrom.trim()
+        val to = valueTo.trim()
+        return if (from.isEmpty() && to.isEmpty()) {
+            base
+        } else {
+            "$base: ${from.ifBlank { "?" }} → ${to.ifBlank { "?" }}"
+        }
+    }
+
+    fun syncSnapshotLabel() {
+        snapshot?.let { snap ->
+            val updated = snap.copy(label = composedLabel())
+            snapshot = updated
+            CustomizeSnapshotStore.save(context, updated)
+        }
     }
 
     val storedProfile = remember { VehicleProfileStore.load(context) }
@@ -403,22 +434,78 @@ private fun CustomizeScreen(onBack: () -> Unit) {
 
             item {
                 Column {
-                    OutlinedTextField(
-                        value = label,
-                        onValueChange = { text ->
-                            label = text
-                            // Keep the saved snapshot's name in step with the field.
-                            snapshot?.let { snap ->
-                                val updated = snap.copy(label = text)
-                                snapshot = updated
-                                CustomizeSnapshotStore.save(context, updated)
+                    ExposedDropdownMenuBox(
+                        expanded = menuOpen,
+                        onExpandedChange = { menuOpen = it },
+                    ) {
+                        OutlinedTextField(
+                            value = label,
+                            onValueChange = { text ->
+                                label = text
+                                picked = null
+                                menuOpen = true
+                                syncSnapshotLabel()
+                            },
+                            label = { Text("Setting") },
+                            placeholder = { Text("Pick one, or type what you changed") },
+                            singleLine = true,
+                            trailingIcon = {
+                                ExposedDropdownMenuDefaults.TrailingIcon(expanded = menuOpen)
+                            },
+                            modifier = Modifier.menuAnchor().fillMaxWidth(),
+                        )
+                        ExposedDropdownMenu(
+                            expanded = menuOpen,
+                            onDismissRequest = { menuOpen = false },
+                        ) {
+                            val matches = CustomizeCatalogue.search(label)
+                            if (matches.isEmpty()) {
+                                DropdownMenuItem(
+                                    text = { Text("No catalogue match — the text above is used") },
+                                    onClick = { menuOpen = false },
+                                )
                             }
-                        },
-                        label = { Text("Setting about to change") },
-                        placeholder = { Text("e.g. Auto-lock by shift from P") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
+                            matches.forEach { setting ->
+                                DropdownMenuItem(
+                                    text = { Text("${setting.category} · ${setting.name}") },
+                                    onClick = {
+                                        label = setting.name
+                                        picked = setting
+                                        menuOpen = false
+                                        syncSnapshotLabel()
+                                    },
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Row {
+                        OutlinedTextField(
+                            value = valueFrom,
+                            onValueChange = { valueFrom = it; syncSnapshotLabel() },
+                            label = { Text("Value from") },
+                            placeholder = { Text("e.g. On") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Spacer(Modifier.size(8.dp))
+                        OutlinedTextField(
+                            value = valueTo,
+                            onValueChange = { valueTo = it; syncSnapshotLabel() },
+                            label = { Text("Value to") },
+                            placeholder = { Text("e.g. Off") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    picked?.values?.takeIf { it.isNotEmpty() }?.let { options ->
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Known values: ${options.joinToString(" · ")}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     Spacer(Modifier.height(8.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         OutlinedButton(
@@ -426,7 +513,7 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                                 val saved = CustomizeSnapshotStore.Snapshot(
                                     at = System.currentTimeMillis(),
                                     readings = results.toList(),
-                                    label = label.trim(),
+                                    label = composedLabel(),
                                 )
                                 snapshot = saved
                                 CustomizeSnapshotStore.save(context, saved)

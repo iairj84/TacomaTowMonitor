@@ -128,6 +128,26 @@ check to work. On a private repository the API answers `404` and the app says so
 in a single muted line instead of failing silently. There is no embedded token,
 by design: a token shipped in an APK is not a secret.
 
+## Releases — do this for every user-visible change
+
+The in-app updater only ever sees GitHub releases, so a version that is built but
+not released simply never reaches the phone. That makes releasing part of
+finishing the work, not an optional extra. Every user-visible change ships:
+
+1. Bump `versionCode` (always +1) and `versionName` in `app/build.gradle.kts`.
+   The `versionCode` must increase every time or Android refuses the install.
+2. Build: `./gradlew assembleDebug`. Never release a build that did not compile.
+3. Copy the APK out as `TacomaTowMonitor-vX.Y.Z-debug.apk`.
+4. `git add` the sources and `app/build.gradle.kts` — **not** the APK. The APK is
+   a release asset, never a file in the tree.
+5. Commit with a message that says why it changed, then `git push origin main`.
+6. `gh release create vX.Y.Z --title "vX.Y.Z — <one line>" --target main` with
+   notes and the APK attached; include the APK's SHA-256 in the notes.
+7. Verify the exact endpoint the app calls:
+   `curl -s https://api.github.com/repos/iairj84/TacomaTowMonitor/releases/latest`
+   must return the new tag **and** an `.apk` asset. A release without an asset is
+   an update the user cannot install.
+
 ## Sharing the adapter log
 
 The adapter log card has **Copy** and **Share** buttons. Both produce the same
@@ -152,7 +172,16 @@ the difference between a diagnosis and a guess — see "The PIDs" above for why.
   this project exists because the descriptor tables and the marketing copy lie.
 - **Parser fixes** where a documented formula and a real reply disagree.
 
-**Deliberately out of scope: customization writes.** `CustomizeActivity` reads
+**What the Customize explorer does now.** It reads C-BEST blocks, snapshots the
+answer, and diffs a later sweep against that snapshot — so changing one setting
+on the factory radio (or with any dealer tool) reveals the block, byte and bit
+that moved, plus the original value to put it back. Changes can be named from
+`app/.../obd/CustomizeCatalogue.kt` (the checklist of settings a Tacoma
+actually exposes), given a from/to value, saved as records stamped with
+year/trim/calibration, and exported as JSON. The catalogue is a checklist only:
+it says nothing about which block holds a setting — that comes from your truck.
+
+**Still out of scope: customization writes.** `CustomizeActivity` reads
 C-BEST blocks and never writes. That is a design decision, not a gap waiting to
 be filled: a wrong write to a body ECU can leave a truck with dead locks, no
 chime and no documented undo, and reverse-engineering the right payloads needs
