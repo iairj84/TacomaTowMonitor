@@ -349,7 +349,15 @@ class ObdRepository(
                     }
                     delay(120)
                 }
+            } else {
+                detectLog.add("auto search never settled (SEARCHING...) — restoring ATSP6")
             }
+            // Never leave the adapter in auto-search: every later command would
+            // be answered with SEARCHING... and the dashboard would look dead.
+            withContext(Dispatchers.IO) {
+                try { c.setCanProtocol() } catch (_: Exception) { }
+            }
+            detectLog.add("protocol: ATSP6 restored")
         }
 
         for (cand in TacomaPids.CONVERTER_CANDIDATES) {

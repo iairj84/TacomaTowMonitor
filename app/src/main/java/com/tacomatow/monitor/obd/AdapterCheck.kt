@@ -17,6 +17,9 @@ enum class AdapterVerdict {
     ECU_REFUSED,
     SESSION_REFUSED,
     ADAPTER_LIMITED,
+
+    /** The adapter was left mid-auto-search, so every request came back empty. */
+    ADAPTER_SEARCHING,
 }
 
 data class AdapterReport(
@@ -77,6 +80,25 @@ object AdapterCheck {
             "Body ECU (21 14 @750)" to bodyRaw,
         )
 
+        // 0. Adapter still searching: this looks exactly like a dead link, and
+        //    reporting it as one sends people hunting for hardware they own.
+        val searching = baseline.contains("SEARCHING") || baseline.contains("UNABLETOCONNECT")
+        if (searching) {
+            return AdapterReport(
+                verdict = AdapterVerdict.ADAPTER_SEARCHING,
+                headline = "The adapter is stuck in protocol search",
+                detail = "It was switched to automatic protocol selection and never finished " +
+                    "searching. While it searches, it aborts every request with SEARCHING…, so " +
+                    "basic data fails too. Nothing is wrong with the truck.",
+                steps = listOf(
+                    "Unplug the dongle from the OBD port for ten seconds to clear the search.",
+                    "Reconnect — the app now pins CAN 11/500 and puts the adapter back if a search fails.",
+                    "Run the check again; the baseline probe should answer.",
+                ),
+                identity = identity, protocol = protocol, probes = probes,
+            )
+        }
+
         // 1. Nothing at all: connection or key problem, not a PID problem.
         if (!baselineWorks) {
             return AdapterReport(
@@ -86,6 +108,7 @@ object AdapterCheck {
                 steps = listOf(
                     "Confirm the ignition is ON and the adapter's LED is lit.",
                     "Force-close Torque, Car Scanner or any other OBD app — these dongles accept one connection.",
+                    "Unplug the dongle for ten seconds and reseat it: a wedged clone answers AT commands but stops reaching the bus.",
                     "Reconnect, then run the check again.",
                 ),
                 identity = identity, protocol = protocol, probes = probes,

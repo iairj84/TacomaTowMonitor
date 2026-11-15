@@ -244,7 +244,12 @@ class BleTransport(
                 close()
                 return false
             }
+            // A single characteristic that both writes and notifies is the
+            // usual wiring for these clones; cross-pairs are a guess and one
+            // of them (fff2 -> fff1) answers AT commands with "?", which then
+            // fails every OBD request. Try the natural shape first.
             val candidates = collectCandidates(g)
+                .sortedBy { if (it.write.uuid == it.notify.uuid) 0 else 1 }
             note("ble: ${candidates.size} candidate UART pair(s)")
             if (candidates.isEmpty()) {
                 stage = "no-uart-characteristic"
@@ -253,6 +258,7 @@ class BleTransport(
             }
             // Probe each pair with a real AT command; keep the first that replies.
             stage = "probing-uart"
+            var fallback: Pair2? = null
             for ((idx, cand) in candidates.withIndex()) {
                 note("ble: probing #$idx ${cand.label}")
                 if (!subscribe(g, cand.notify)) {
@@ -261,13 +267,26 @@ class BleTransport(
                 }
                 writeChar = cand.write
                 Thread.sleep(250)
-                val probe = transact("AT", 2_500)
+                val probe = transact("AT", 2_500)?.trim()
                 note("ble: #$idx probe -> ${probe?.take(40) ?: "<silence>"}")
-                if (probe != null && probe.isNotEmpty()) {
+                // "?" means the dongle heard something it could not parse, so
+                // this channel is not the UART. Keep it only as a last resort.
+                if (probe != null && probe.isNotEmpty() && probe != "?") {
                     stage = "ready"
                     note("ble: using ${cand.label}")
                     return true
                 }
+                if (probe != null && probe.isNotEmpty() && fallback == null) {
+                    fallback = cand
+                }
+            }
+            val last = fallback
+            if (last != null && subscribe(g, last.notify)) {
+                writeChar = last.write
+                Thread.sleep(250)
+                stage = "ready"
+                note("ble: using ${last.label} (best of a bad set)")
+                return true
             }
             stage = "no-answer-on-probe"
             close()

@@ -13,12 +13,22 @@ package com.tacomatow.monitor.obd
 class Elm327Client(
     private val transport: ElmTransport,
 ) {
-    private var currentHeader: String? = null
+    private var currentHeader: String? = UNKNOWN_HEADER
     @Volatile private var open = false
     @Volatile private var protocol = "?"
 
     /** Which ELM protocol is in force ("6" = CAN 11/500, "0" = auto). */
     fun activeProtocol(): String = protocol
+
+    companion object {
+        /**
+         * Sentinel for "the adapter's header is unknown". A protocol change
+         * (ATSP) resets the ELM's header behind our back, so caching `null`
+         * would wrongly skip the AT SH 7DF that puts it back on functional
+         * broadcast addressing.
+         */
+        private const val UNKNOWN_HEADER = "\u0000"
+    }
     @Volatile private var transportOpened = false
 
     /** False means we never even got a byte pipe — very different from a silent dongle. */
@@ -106,6 +116,13 @@ class Elm327Client(
             val raw = transport.transact(cmd, 3_500)
             if (raw != null) {
                 val noData = raw.contains("NODATA") || raw.contains("?") || raw.contains("ERROR")
+                // "OK", "?" or "SEARCHING..." is the adapter talking about
+                // itself, not an answer from the truck. Parsing those as a
+                // reply is how a desynced clone produces phantom results.
+                if (isAdapterNoise(raw)) {
+                    if (attempt == 0) Thread.sleep(150)
+                    return@repeat
+                }
                 val bytes = parseResponse(cmd, raw)
                 val value = bytes?.let { TacomaPids.decode(def, it) }
                 if (value != null) return PidAttempt(value, false)
@@ -126,6 +143,13 @@ class Elm327Client(
      * refusal proves the request arrived, whereas NO DATA only proves the
      * adapter gave up.
      */
+    /** Adapter housekeeping rather than vehicle data. */
+    fun isAdapterNoise(raw: String): Boolean {
+        val t = raw.trim().uppercase()
+        return t.isEmpty() || t == "OK" || t == "?" ||
+            t.startsWith("SEARCHING") || t.contains("UNABLE TO CONNECT")
+    }
+
     fun negativeResponse(raw: String): String? {
         val tokens = raw.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
         for (i in tokens.indices) {
@@ -146,8 +170,9 @@ class Elm327Client(
         if (!open) return false
         setHeader(null)
         val r = transport.transact("1003", 2_500)
-        val ok = r != null && !r.contains("7F")
-        return ok
+        // Only "50 03" is acceptance. A silent "NO DATA" used to be counted
+        // as success, which made the log claim an open session that never was.
+        return r != null && r.replace(" ", "").uppercase().startsWith("50")
     }
 
     /**
@@ -156,9 +181,23 @@ class Elm327Client(
      * auto — worth matching when a pinned session returns nothing.
      */
     fun setAutoProtocol(): Boolean {
-        val r = transport.transact("ATSP0", 4_000)
+        transport.transact("ATSP0", 4_000)
         protocol = "0"
-        currentHeader = null
+        currentHeader = UNKNOWN_HEADER
+        // Auto-search runs asynchronously and aborts every queued command with
+        // SEARCHING... meanwhile, so prove it actually settled before callers
+        // treat the switch as usable.
+        val probe = transport.transact("0100", 6_000)
+        currentHeader = UNKNOWN_HEADER
+        return probe != null && !probe.contains("SEARCHING", true) &&
+            !probe.contains("UNABLE", true)
+    }
+
+    /** Pin the Tacoma's bus (CAN 11-bit / 500k). */
+    fun setCanProtocol(): Boolean {
+        val r = transport.transact("ATSP6", 4_000)
+        protocol = "6"
+        currentHeader = UNKNOWN_HEADER
         return r != null
     }
 
