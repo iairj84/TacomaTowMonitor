@@ -258,7 +258,8 @@ class BleTransport(
             }
             // Probe each pair with a real AT command; keep the first that replies.
             stage = "probing-uart"
-            var fallback: Pair2? = null
+            var silent: Pair2? = null
+            var confusing: Pair2? = null
             for ((idx, cand) in candidates.withIndex()) {
                 note("ble: probing #$idx ${cand.label}")
                 if (!subscribe(g, cand.notify)) {
@@ -266,34 +267,37 @@ class BleTransport(
                     continue
                 }
                 writeChar = cand.write
-                Thread.sleep(250)
+                Thread.sleep(500)
                 var probe = transact("AT", 2_500)?.trim()
-                // Silence right after subscribing is usually the clone waking
-                // up, not a dead channel — one retry before judging it.
-                if (probe.isNullOrEmpty()) {
-                    Thread.sleep(400)
-                    probe = transact("AT", 2_500)?.trim()
+                // A cheap clone is still waking up for a second after the
+                // notify subscription arms; silence here proves nothing yet.
+                repeat(2) {
+                    if (probe.isNullOrEmpty()) {
+                        Thread.sleep(600)
+                        probe = transact("AT", 2_500)?.trim()
+                    }
                 }
                 note("ble: #$idx probe -> ${probe?.take(40) ?: "<silence>"}")
-                // "?" means the dongle heard something it could not parse, so
-                // this channel is not the UART.
                 if (probe != null && probe.isNotEmpty() && probe != "?") {
                     stage = "ready"
                     note("ble: using ${cand.label}")
                     return true
                 }
-                // Silence beats "?" as a fallback: a quiet channel may still
-                // answer OBD requests, a channel that says "?" cannot.
-                if (probe.isNullOrEmpty() && fallback == null) {
-                    fallback = cand
+                // Rank the losers but never walk away: attaching to a doubtful
+                // channel beats refusing to connect, because the session that
+                // follows is what actually diagnoses the dongle.
+                if (probe.isNullOrEmpty()) {
+                    if (silent == null) silent = cand
+                } else if (confusing == null) {
+                    confusing = cand
                 }
             }
-            val last = fallback
+            val last = silent ?: confusing ?: candidates.firstOrNull()
             if (last != null && subscribe(g, last.notify)) {
                 writeChar = last.write
-                Thread.sleep(250)
+                Thread.sleep(400)
                 stage = "ready"
-                note("ble: using ${last.label} (best of a bad set)")
+                note("ble: using ${last.label} (no clean probe — best of a bad set)")
                 return true
             }
             stage = "no-answer-on-probe"
