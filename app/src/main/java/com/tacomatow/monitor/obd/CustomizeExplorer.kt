@@ -36,6 +36,124 @@ object CustomizeExplorer {
 
     fun hex(bytes: ByteArray?): String? =
         bytes?.joinToString(" ") { "%02X".format(it) }
+
+    /**
+     * Compare two sweeps and report which blocks moved.
+     *
+     * This is the safe way to learn a layout: change ONE setting on the
+     * factory radio's Vehicle Customization screen between two sweeps, and
+     * the byte that moved is the setting, with both values in hand. It needs
+     * no sniffing and no vendor software, because it observes the effect
+     * rather than the traffic.
+     */
+    fun diff(
+        before: List<LidReading>,
+        after: List<LidReading>,
+        /**
+         * Blocks the second sweep actually asked about. A fast re-scan omits
+         * some probes, and an omitted block must never look like a block that
+         * stopped answering.
+         */
+        probedKeys: Set<Pair<String, Int>>? = null,
+    ): SnapshotDiff {
+        fun key(r: LidReading) = r.header to r.lid
+        val beforeMap = before.filter { it.supported }.associateBy(::key)
+        val afterMap = after.filter { it.supported }.associateBy(::key)
+        val order = compareBy<Pair<String, Int>>({ it.first }, { it.second })
+
+        val shared = beforeMap.keys.intersect(afterMap.keys).sortedWith(order)
+        val changes = mutableListOf<BlockChange>()
+        for (k in shared) {
+            val old = beforeMap.getValue(k)
+            val new = afterMap.getValue(k)
+            val oldTokens = tokens(old.payloadHex)
+            val newTokens = tokens(new.payloadHex)
+            if (oldTokens == newTokens) continue
+            val moved = (0 until maxOf(oldTokens.size, newTokens.size)).mapNotNull { i ->
+                val a = oldTokens.getOrNull(i) ?: "—"
+                val b = newTokens.getOrNull(i) ?: "—"
+                if (a == b) null else ByteChange(i, a, b)
+            }
+            changes += BlockChange(
+                header = k.first,
+                ecuLabel = new.ecuLabel,
+                lid = k.second,
+                beforeHex = old.payloadHex ?: "",
+                afterHex = new.payloadHex ?: "",
+                byteChanges = moved,
+            )
+        }
+
+        return SnapshotDiff(
+            changes = changes,
+            gained = (afterMap.keys - beforeMap.keys).sortedWith(order).map(afterMap::getValue),
+            lost = (beforeMap.keys - afterMap.keys)
+                .filter { probedKeys == null || it in probedKeys }
+                .sortedWith(order)
+                .map(beforeMap::getValue),
+            compared = shared.size,
+        )
+    }
+
+    private fun tokens(hex: String?): List<String> =
+        hex?.trim()?.split(' ')?.filter { it.isNotEmpty() } ?: emptyList()
+
+    /** Plain-text version of a diff, for sharing a verified setting. */
+    fun describe(diff: SnapshotDiff, savedLabel: String, currentLabel: String): String {
+        val sb = StringBuilder()
+        sb.appendLine("Tacoma customize diff")
+        sb.appendLine("before: $savedLabel")
+        sb.appendLine("after:  $currentLabel")
+        sb.appendLine("blocks compared: ${diff.compared}")
+        sb.appendLine()
+        if (diff.changes.isEmpty()) {
+            sb.appendLine("No block payloads changed.")
+        } else {
+            for (c in diff.changes) {
+                sb.appendLine("0x%02X  %s  (%s)".format(c.lid, c.ecuLabel, c.header))
+                sb.appendLine("  before: ${c.beforeHex}")
+                sb.appendLine("  after:  ${c.afterHex}")
+                for (b in c.byteChanges) sb.appendLine("  ${b.describe()}")
+                sb.appendLine()
+            }
+        }
+        if (diff.gained.isNotEmpty()) {
+            sb.appendLine("answered only after the change:")
+            diff.gained.forEach { sb.appendLine("  0x%02X %s".format(it.lid, it.ecuLabel)) }
+        }
+        if (diff.lost.isNotEmpty()) {
+            sb.appendLine("answered only before the change:")
+            diff.lost.forEach { sb.appendLine("  0x%02X %s".format(it.lid, it.ecuLabel)) }
+        }
+        return sb.toString().trimEnd()
+    }
+}
+
+/** One byte position that moved between two snapshots of the same block. */
+data class ByteChange(val index: Int, val before: String, val after: String) {
+    fun describe(): String = "byte $index: $before → $after"
+}
+
+/** A block whose payload moved between two snapshots. */
+data class BlockChange(
+    val header: String,
+    val ecuLabel: String,
+    val lid: Int,
+    val beforeHex: String,
+    val afterHex: String,
+    val byteChanges: List<ByteChange>,
+) {
+    val displayLid: String get() = "0x%02X".format(lid)
+}
+
+/** Result of comparing two customize sweeps. */
+data class SnapshotDiff(
+    val changes: List<BlockChange>,
+    val gained: List<LidReading>,
+    val lost: List<LidReading>,
+    val compared: Int,
+) {
+    val identical: Boolean get() = changes.isEmpty() && gained.isEmpty() && lost.isEmpty()
 }
 
 data class LidReading(

@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Only the update cache is exposed, so the installer can read a downloaded APK. -->
+<!-- Only the update cache is exposed, so the installer can read a downloaded APK,
+     plus the mapping export shared as a JSON attachment. -->
 <paths>
     <cache-path name="updates" path="updates/" />
+    <cache-path name="mappings" path="mappings/" />
 </paths>

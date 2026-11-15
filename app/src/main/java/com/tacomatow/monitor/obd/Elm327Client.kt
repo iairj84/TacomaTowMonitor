@@ -217,6 +217,7 @@ class Elm327Client(
             command.startsWith("22") -> "62" + command.substring(2)
             command.startsWith("21") -> "61" + command.substring(2)
             command.startsWith("01") -> "41" + command.substring(2)
+            command.startsWith("09") -> "49" + command.substring(2)
             else -> return null
         }
         val r = response.replace(" ", "")

@@ -1,8 +1,11 @@
 package com.tacomatow.monitor
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -18,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -29,6 +33,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -42,13 +48,29 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.core.content.FileProvider
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.tacomatow.monitor.obd.BlockChange
+import com.tacomatow.monitor.obd.ChangeRecord
+import com.tacomatow.monitor.obd.CustomizeExplorer
+import com.tacomatow.monitor.obd.CustomizeKnownBlocks
+import com.tacomatow.monitor.obd.CustomizeMapping
+import com.tacomatow.monitor.obd.CustomizeRecordStore
+import com.tacomatow.monitor.obd.CustomizeSnapshotStore
 import com.tacomatow.monitor.obd.LidReading
 import com.tacomatow.monitor.obd.ObdHolder
+import com.tacomatow.monitor.obd.SnapshotDiff
+import com.tacomatow.monitor.obd.VehicleProfile
+import com.tacomatow.monitor.obd.VehicleProfileStore
 import com.tacomatow.monitor.ui.TacomaTheme
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * READ-ONLY discovery of Toyota customize blocks (C-BEST).
@@ -80,6 +102,127 @@ private fun CustomizeScreen(onBack: () -> Unit) {
     var total by remember { mutableIntStateOf(0) }
     var message by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val stamp = remember { SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()) }
+
+    fun share(subject: String, text: String) {
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, subject)
+            putExtra(Intent.EXTRA_TEXT, text)
+        }
+        context.startActivity(Intent.createChooser(send, subject))
+    }
+
+    // A body write may only land after an ignition cycle, so the snapshot has
+    // to outlive this screen (and the process).
+    val restored = remember { CustomizeSnapshotStore.load(context) }
+    var snapshot by remember { mutableStateOf(restored) }
+    var label by remember { mutableStateOf(restored?.label ?: "") }
+    val records = remember {
+        mutableStateListOf<ChangeRecord>().apply { addAll(CustomizeRecordStore.load(context)) }
+    }
+
+    val storedProfile = remember { VehicleProfileStore.load(context) }
+    var yearText by remember { mutableStateOf(storedProfile.year?.toString() ?: "") }
+    var trimText by remember { mutableStateOf(storedProfile.trim) }
+    var calibrationText by remember { mutableStateOf(storedProfile.calibration) }
+    var readingCal by remember { mutableStateOf(false) }
+
+    fun profile() = VehicleProfile(
+        year = yearText.toIntOrNull()?.takeIf { it in 1980..2100 },
+        trim = trimText.trim(),
+        calibration = calibrationText.trim(),
+    )
+
+    fun persistProfile() = VehicleProfileStore.save(context, profile())
+
+    val currentProfile = profile()
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val text = runCatching {
+            context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+        }.getOrNull()
+        if (text == null) {
+            message = "Couldn't read that file."
+            return@rememberLauncherForActivityResult
+        }
+        val parsed = CustomizeMapping.parse(text)
+        if (parsed.error != null) {
+            message = parsed.error
+            return@rememberLauncherForActivityResult
+        }
+        val (merged, skipped) = CustomizeMapping.merge(records.toList(), parsed.records)
+        records.clear()
+        records.addAll(merged)
+        CustomizeRecordStore.save(context, merged)
+        val added = parsed.records.size - skipped
+        val local = profile()
+        val foreign = parsed.records.count { local.conflictsWith(it) }
+        message = buildString {
+            append("Imported $added ")
+            append(if (added == 1) "entry" else "entries")
+            if (skipped > 0) append(", skipped $skipped already present")
+            append(".")
+            if (foreign > 0) {
+                append(" $foreign came from a different vehicle (this one: ${local.summary()}).")
+            }
+        }
+    }
+
+    // Keyed per vehicle: editing the profile loads that truck's shortlist (or a
+    // clean one), so a stale list can't silently narrow what gets scanned.
+    val profileKey = currentProfile.key()
+    var knownBlocks by remember(profileKey) {
+        mutableStateOf(CustomizeKnownBlocks.load(context, currentProfile))
+    }
+    var lastScanFast by remember { mutableStateOf(false) }
+
+    fun runScan(fast: Boolean) {
+        message = null
+        results.clear()
+        done = 0
+        total = if (fast) knownBlocks.values.sumOf { it.size } else CustomizeExplorer.totalProbes
+        scanning = true
+        lastScanFast = fast
+        scope.launch {
+            val found = ObdHolder.repository.sweepCustomize(
+                known = if (fast) knownBlocks else null,
+            ) { d, t ->
+                done = d
+                total = t
+            }
+            results.addAll(found)
+            // A full sweep is what teaches the shortlist; keep it up to date.
+            if (!fast) knownBlocks = CustomizeKnownBlocks.record(context, currentProfile, found)
+            scanning = false
+            val hits = found.count { it.supported }
+            message = when {
+                found.isEmpty() && fast -> "No known blocks answered — run a full scan."
+                found.isEmpty() -> "No adapter session — connect on the dashboard first."
+                fast -> "$hits of ${found.size} known blocks answered. Only a full scan can catch a " +
+                    "block that has just started answering."
+                hits == 0 -> "No LIDs answered. This dongle may not pass multi-frame body-ECU replies."
+                else -> "$hits of ${found.size} probes answered. Bodies shown below."
+            }
+        }
+    }
+
+    // Recompute whenever the sweep result set or the saved snapshot changes.
+    val current = results.toList()
+    // A fast re-scan never asked about the omitted probes, so their absence
+    // must not be reported as "stopped answering".
+    val probedKeys: Set<Pair<String, Int>>? = if (lastScanFast) {
+        knownBlocks.entries.flatMap { (header, lids) -> lids.map { header to it } }.toSet()
+    } else {
+        null
+    }
+    val diff: SnapshotDiff? = snapshot?.let {
+        CustomizeExplorer.diff(it.readings, current, probedKeys)
+    }
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         Row(
@@ -159,44 +302,267 @@ private fun CustomizeScreen(onBack: () -> Unit) {
             }
 
             item {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Button(
-                        onClick = {
-                            message = null
-                            results.clear()
-                            done = 0
-                            total = com.tacomatow.monitor.obd.CustomizeExplorer.totalProbes
-                            scanning = true
-                            scope.launch {
-                                val found = ObdHolder.repository.sweepCustomize { d, t ->
-                                    done = d
-                                    total = t
-                                }
-                                results.addAll(found)
-                                scanning = false
-                                if (found.isEmpty()) {
-                                    message = "No adapter session — connect on the dashboard first."
-                                } else {
-                                    val hits = found.count { it.supported }
-                                    message = if (hits == 0) {
-                                        "No LIDs answered. This dongle may not pass multi-frame body-ECU replies."
-                                    } else {
-                                        "$hits of ${found.size} probes answered. Bodies shown below."
-                                    }
-                                }
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Button(
+                            onClick = { runScan(false) },
+                            enabled = !scanning && state.connected,
+                        ) { Text(if (scanning) "Scanning…" else "Scan every LID") }
+
+                        Spacer(Modifier.size(8.dp))
+
+                        OutlinedButton(
+                            onClick = { runScan(true) },
+                            enabled = !scanning && state.connected && knownBlocks.isNotEmpty(),
+                        ) { Text("Re-scan known") }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        when {
+                            !state.connected -> "Not connected"
+                            scanning -> "$done / $total"
+                            knownBlocks.isEmpty() ->
+                                "Scan once to learn which blocks this truck answers, then re-scans " +
+                                    "only ask those."
+                            else -> {
+                                val n = knownBlocks.values.sumOf { it.size }
+                                "$n blocks have answered on this truck — Re-scan known reads only those."
                             }
                         },
-                        enabled = !scanning && state.connected,
-                    ) { Text(if (scanning) "Scanning…" else "Scan every LID") }
-
-                    Spacer(Modifier.size(12.dp))
-
-                    Text(
-                        if (!state.connected) "Not connected"
-                        else if (scanning) "$done / $total" else "",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                }
+            }
+
+                        item {
+                Column {
+                    Text(
+                        "THIS VEHICLE",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = yearText,
+                            onValueChange = { t ->
+                                yearText = t.filter { it.isDigit() }.take(4)
+                                persistProfile()
+                            },
+                            label = { Text("Year") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f),
+                        )
+                        Spacer(Modifier.size(8.dp))
+                        OutlinedTextField(
+                            value = trimText,
+                            onValueChange = { t -> trimText = t; persistProfile() },
+                            label = { Text("Trim") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1.4f),
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = calibrationText,
+                            onValueChange = { t -> calibrationText = t; persistProfile() },
+                            label = { Text("Calibration ID") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(
+                            onClick = {
+                                readingCal = true
+                                scope.launch {
+                                    val cal = ObdHolder.repository.readCalibrationId()
+                                    if (cal != null) {
+                                        calibrationText = cal
+                                        persistProfile()
+                                        message = "Calibration read from the ECU: $cal"
+                                    } else {
+                                        message = "This ECU didn't publish a CALID (09 04) — type it instead."
+                                    }
+                                    readingCal = false
+                                }
+                            },
+                            enabled = state.connected && !readingCal,
+                        ) { Text(if (readingCal) "Reading…" else "Read") }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Stamped on every recorded change so an import can be checked against this " +
+                            "truck. Read asks the ECU for 09 04; if nothing answers, type the value.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            item {
+                Column {
+                    OutlinedTextField(
+                        value = label,
+                        onValueChange = { text ->
+                            label = text
+                            // Keep the saved snapshot's name in step with the field.
+                            snapshot?.let { snap ->
+                                val updated = snap.copy(label = text)
+                                snapshot = updated
+                                CustomizeSnapshotStore.save(context, updated)
+                            }
+                        },
+                        label = { Text("Setting about to change") },
+                        placeholder = { Text("e.g. Auto-lock by shift from P") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedButton(
+                            onClick = {
+                                val saved = CustomizeSnapshotStore.Snapshot(
+                                    at = System.currentTimeMillis(),
+                                    readings = results.toList(),
+                                    label = label.trim(),
+                                )
+                                snapshot = saved
+                                CustomizeSnapshotStore.save(context, saved)
+                            },
+                            enabled = !scanning && results.any { it.supported },
+                        ) { Text("Save snapshot") }
+
+                        Spacer(Modifier.size(8.dp))
+
+                        if (snapshot != null) {
+                            TextButton(onClick = {
+                                snapshot = null
+                                label = ""
+                                CustomizeSnapshotStore.clear(context)
+                            }) {
+                                Text("Clear")
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    val saved = snapshot
+                    Text(
+                        if (saved == null) {
+                            "To map a setting: name it, save a snapshot, then change that ONE setting " +
+                                "on the factory radio (Menu → Setup → Vehicle Customization) and scan " +
+                                "again. The block that moved is that setting."
+                        } else {
+                            val at = stamp.format(Date(saved.at))
+                            "\"${saved.label.ifBlank { "Unnamed change" }}\" · snapshot from $at · " +
+                                "${saved.readings.count { it.supported }} blocks. Change the setting " +
+                                "on the radio, then scan again."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+
+            val snap = snapshot
+            if (snap != null && results.isNotEmpty() && !scanning) {
+                item {
+                    val shown = diff ?: CustomizeExplorer.diff(emptyList(), emptyList())
+                    val shownLabel = snap.label.ifBlank { "Unnamed change" }
+                    DiffCard(
+                        diff = shown,
+                        label = shownLabel,
+                        onShare = {
+                            val text = CustomizeExplorer.describe(
+                                diff = shown,
+                                savedLabel = "${stamp.format(Date(snap.at))} — $shownLabel",
+                                currentLabel = stamp.format(Date()),
+                            )
+                            share("Tacoma customize diff", text)
+                        },
+                        onRecord = {
+                            val at = System.currentTimeMillis()
+                            val added = shown.changes.flatMap { c ->
+                                c.byteChanges.map { b ->
+                                    ChangeRecord(
+                                        label = shownLabel,
+                                        header = c.header,
+                                        ecuLabel = c.ecuLabel,
+                                        lid = c.lid,
+                                        byteIndex = b.index,
+                                        before = b.before,
+                                        after = b.after,
+                                        at = at,
+                                        year = currentProfile.year,
+                                        trim = currentProfile.trim,
+                                        calibration = currentProfile.calibration,
+                                    )
+                                }
+                            }
+                            if (added.isNotEmpty()) {
+                                records.addAll(added)
+                                CustomizeRecordStore.save(context, records.toList())
+                            }
+                        },
+                    )
+                }
+            }
+
+            if (records.isNotEmpty()) {
+                item {
+                    Column {
+                        Text(
+                            "RECORDED CHANGES (${records.size})",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(onClick = {
+                                val file = CustomizeMapping.write(context, records.toList())
+                                if (file == null) {
+                                    message = "Couldn't write the mapping file."
+                                } else {
+                                    val uri = FileProvider.getUriForFile(
+                                        context,
+                                        "${context.packageName}.updates",
+                                        file,
+                                    )
+                                    val send = Intent(Intent.ACTION_SEND).apply {
+                                        type = CustomizeMapping.MIME
+                                        putExtra(Intent.EXTRA_STREAM, uri)
+                                        putExtra(Intent.EXTRA_SUBJECT, "Tacoma customize mapping")
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }
+                                    context.startActivity(Intent.createChooser(send, "Export mapping"))
+                                }
+                            }) { Text("Export JSON") }
+                            TextButton(onClick = {
+                                importLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                            }) { Text("Import") }
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(onClick = {
+                                share(
+                                    "Tacoma customize records",
+                                    CustomizeRecordStore.describe(records.toList()) {
+                                        stamp.format(Date(it))
+                                    },
+                                )
+                            }) { Text("Share as text") }
+                            TextButton(onClick = {
+                                records.clear()
+                                CustomizeRecordStore.clear(context)
+                            }) { Text("Clear") }
+                        }
+                    }
+                }
+                items(
+                    records.reversed(),
+                    key = { "${it.header}-${it.lid}-${it.byteIndex}-${it.at}" },
+                ) { record ->
+                    RecordRow(record, conflicts = currentProfile.conflictsWith(record))
                 }
             }
 
@@ -238,6 +604,148 @@ private fun CustomizeScreen(onBack: () -> Unit) {
             }
 
             item { Spacer(Modifier.height(20.dp).navigationBarsPadding()) }
+        }
+    }
+}
+
+@Composable
+private fun RecordRow(record: ChangeRecord, conflicts: Boolean) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(12.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(record.label, style = MaterialTheme.typography.titleSmall)
+                Text(
+                    record.displayLid,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                record.describe(),
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Text(
+                if (conflicts) "${record.vehicleLabel()} — not this truck"
+                else record.vehicleLabel(),
+                style = MaterialTheme.typography.labelSmall,
+                color = if (conflicts) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun DiffCard(
+    diff: SnapshotDiff,
+    label: String,
+    onShare: () -> Unit,
+    onRecord: () -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = if (diff.identical) MaterialTheme.colorScheme.surface
+            else MaterialTheme.colorScheme.primaryContainer,
+        ),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(
+                    if (diff.identical) "NO CHANGES SINCE SNAPSHOT" else "CHANGED SINCE SNAPSHOT",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                TextButton(onClick = onShare) { Text("Share") }
+            }
+            Text(
+                "\"$label\"",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Text(
+                "${diff.compared} blocks compared",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (diff.changes.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                Button(onClick = onRecord) { Text("Save to records") }
+            }
+            Spacer(Modifier.height(8.dp))
+
+            if (diff.identical) {
+                Text(
+                    "Nothing moved. Either that setting isn't in these blocks — audio and display " +
+                        "options live in the radio itself — or the change didn't stick. Cycle the " +
+                        "ignition and scan again before concluding.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            diff.changes.forEach { change ->
+                Spacer(Modifier.height(10.dp))
+                ChangeRow(change)
+            }
+
+            if (diff.gained.isNotEmpty()) {
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "Answered only after the change: " +
+                        diff.gained.joinToString(", ") { it.displayLid + " " + it.ecuLabel },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (diff.lost.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Answered only before the change: " +
+                        diff.lost.joinToString(", ") { it.displayLid + " " + it.ecuLabel },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChangeRow(change: BlockChange) {
+    Column {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(
+                "${change.displayLid}  ·  ${change.ecuLabel}",
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
+                change.header,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Text(
+            "before  ${change.beforeHex}",
+            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            "after   ${change.afterHex}",
+            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        change.byteChanges.forEach { b ->
+            Text(
+                b.describe(),
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                color = MaterialTheme.colorScheme.primary,
+            )
         }
     }
 }

@@ -491,38 +491,81 @@ class ObdRepository(
     }
 
     /**
+     * Best-effort calibration identifier (mode 09 PID 04).
+     *
+     * Stamped on every recorded mapping so an import can be checked against
+     * this truck. Returns null when nothing publishes CALIDs — several Toyota
+     * body ECUs only answer this on the powertrain ECU.
+     */
+    suspend fun readCalibrationId(): String? {
+        val c = client ?: return null
+        pollJob?.cancel()
+        return try {
+            withContext(Dispatchers.IO) {
+                val raw = try { c.readRaw(null, "0904", 3_000) } catch (_: Exception) { null }
+                    ?: return@withContext null
+                val payload = c.payloadFor("0904", raw) ?: return@withContext null
+                if (payload.size < 2) return@withContext null
+                // [calid count][16 ASCII bytes per CALID]
+                val text = payload.drop(1)
+                    .map { (it.toInt() and 0xFF).toChar() }
+                    .filter { it.code in 32..126 }
+                    .joinToString("")
+                text.take(16).ifBlank { null }
+            }
+        } finally {
+            if (_state.value.connected) startPoll(c)
+        }
+    }
+
+    /**
      * Read-only sweep of Toyota customize local identifiers.
      * Pauses gauge polling while it runs so replies can't interleave, then
      * restarts it. Never writes to any ECU.
      */
-    suspend fun sweepCustomize(onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }): List<LidReading> {
+    suspend fun sweepCustomize(
+        known: Map<String, Set<Int>>? = null,
+        onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
+    ): List<LidReading> {
         val c = client ?: return emptyList()
         pollJob?.cancel()
-        val total = CustomizeExplorer.totalProbes
+        // known != null means a fast re-scan: only blocks that have answered
+        // before, and a shorter timeout because we expect a reply. A full sweep
+        // is still the only way to notice a block that has just started
+        // answering, so it stays available.
+        val plan = CustomizeExplorer.TARGETS.flatMap { target ->
+            val lids = known?.get(target.header)
+            when {
+                known == null -> CustomizeExplorer.LID_RANGE.map { target to it }
+                lids.isNullOrEmpty() -> emptyList()
+                else -> lids.sorted().map { target to it }
+            }
+        }
+        val total = plan.size
+        val timeout = if (known == null) 1_200 else 800
+        val pacing = if (known == null) 70L else 40L
         val out = mutableListOf<LidReading>()
         try {
             // Try to open the extended session so body ECUs answer at all.
-            val sessionOk = withContext(Dispatchers.IO) {
+            withContext(Dispatchers.IO) {
                 try { c.enterExtendedSession() } catch (_: Exception) { false }
             }
             onProgress(0, total)
-            for (target in CustomizeExplorer.TARGETS) {
-                for (lid in CustomizeExplorer.LID_RANGE) {
-                    val cmd = CustomizeExplorer.readCommand(lid)
-                    val raw = withContext(Dispatchers.IO) {
-                        try { c.readRaw(target.header, cmd, 1_200) } catch (_: Exception) { null }
-                    }
-                    val payload = raw?.let { c.payloadFor(cmd, it) }
-                    out += LidReading(
-                        header = target.header,
-                        ecuLabel = target.label,
-                        lid = lid,
-                        raw = raw,
-                        payloadHex = CustomizeExplorer.hex(payload),
-                    )
-                    onProgress(out.size, total)
-                    delay(70)
+            for ((target, lid) in plan) {
+                val cmd = CustomizeExplorer.readCommand(lid)
+                val raw = withContext(Dispatchers.IO) {
+                    try { c.readRaw(target.header, cmd, timeout) } catch (_: Exception) { null }
                 }
+                val payload = raw?.let { c.payloadFor(cmd, it) }
+                out += LidReading(
+                    header = target.header,
+                    ecuLabel = target.label,
+                    lid = lid,
+                    raw = raw,
+                    payloadHex = CustomizeExplorer.hex(payload),
+                )
+                onProgress(out.size, total)
+                delay(pacing)
             }
         } finally {
             if (_state.value.connected) startPoll(c)
