@@ -66,6 +66,9 @@ dependencies {
     // rows only. See car/TacomaCarAppService.kt + README "Android Auto" section.
     implementation("androidx.car.app:app:1.7.0")
 
+    // Test-only: the write refusal policy is pure and must stay tested. Not shipped.
+    testImplementation("junit:junit:4.13.2")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
