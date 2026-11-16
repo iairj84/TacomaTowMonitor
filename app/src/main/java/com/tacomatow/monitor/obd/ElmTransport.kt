@@ -81,9 +81,21 @@ class SppTransport(
         return try {
             stage = "classic-connect"
             note("classic: opening RFCOMM to ${device.address}")
-            val sock = device.createRfcommSocketToServiceRecord(SPP_UUID)
             adapter.cancelDiscovery()
-            sock.connect()
+            // Insecure first: ELM327 clones need no authentication, and the
+            // secure socket makes Android pop a system pairing dialog on an
+            // unpaired dongle — a distraction on every auto-reconnect for a
+            // set-and-forget monitor. Secure stays as the fallback for the
+            // rare clone that refuses an unauthenticated channel.
+            val sock = try {
+                device.createInsecureRfcommSocketToServiceRecord(SPP_UUID).also {
+                    it.connect()
+                    note("classic: insecure socket up")
+                }
+            } catch (_: Exception) {
+                note("classic: insecure refused, trying secure (may ask to pair)")
+                device.createRfcommSocketToServiceRecord(SPP_UUID).also { it.connect() }
+            }
             socket = sock
             input = sock.inputStream
             output = sock.outputStream
