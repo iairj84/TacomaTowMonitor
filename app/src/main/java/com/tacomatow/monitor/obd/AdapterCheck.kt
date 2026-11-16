@@ -68,7 +68,12 @@ object AdapterCheck {
         val body = norm(bodyRaw)
 
         val baselineWorks = baseline.contains("4100")
-        val sessionOk = session.startsWith("5003") || (session.startsWith("50") && !session.contains("7F"))
+        // A 0x50 *message* is acceptance. The old prefix check could never
+        // succeed with headers on — the reply starts with the CAN ID
+        // ("7E8 06 50 03 …") — so every adapter looked session-refused.
+        val sessionOk = IsoTp.messages(sessionRaw.orEmpty()).any { m ->
+            m.isNotEmpty() && (m[0].toInt() and 0xFF) == 0x50
+        }
         // A negative response proves the adapter delivered the request.
         val transNegative = trans.contains("7F22") || trans.contains("7F21")
         val bodyNegative = body.contains("7F21") || body.contains("7F22")
@@ -81,7 +86,7 @@ object AdapterCheck {
             "Mode 01 baseline (0100)" to baselineRaw,
             "Extended session (10 03)" to sessionRaw,
             "Transmission (22 1627 @701)" to transRaw,
-            "Body ECU (21 14 @750)" to bodyRaw,
+            "Body ECU (21 14 @750/40)" to bodyRaw,
         )
 
         // 0. Adapter still searching: this looks exactly like a dead link, and

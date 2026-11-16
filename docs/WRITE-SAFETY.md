@@ -214,3 +214,22 @@ And in exchange, the marketing must never claim:
 
 Step 3 is where the project either has a verified restore path or discovers it
 does not. Everything before it is preparation; everything after it is exposure.
+
+---
+
+## 8. Diagnostics console: the gate that already exists (v0.9.0)
+
+The raw console takes free-text header and command, so "never writes" has to
+be enforced, not promised. `WritePolicy.consoleRefusal` refuses, with the
+refusal shown as the reply:
+
+- any service that writes to the truck, under any header: 04 (clear codes),
+  2E/3B/3D (write identifiers), 2F (I/O control), 31 (routines), 34–38
+  (upload/download/transfer)
+- AT commands that reset or re-protocol the adapter mid-session (Z, WS, D,
+  SP, PC) — they would desync the session the poll loop relies on
+- embedded line breaks, which would smuggle a second command past the ELM
+- malformed headers or non-hex commands
+
+Other AT commands are adapter-local and cannot write the truck, so reads like
+ATI and ATRV stay available for diagnosis.

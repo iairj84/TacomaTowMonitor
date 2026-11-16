@@ -1,7 +1,7 @@
 package com.tacomatow.monitor.obd
 
 /**
- * Read-only decoding of SAE J1979 trouble-code replies.
+ * Trouble-code replies, read-only.
  *
  * Mode 03 (stored/confirmed), 07 (pending) and 0A (permanent) answer with
  * service byte 0x43/0x47/0x4A, a count byte, then two bytes per code.
@@ -12,7 +12,13 @@ object DtcDecode {
 
     private val SERVICE = mapOf("03" to 0x43, "07" to 0x47, "0A" to 0x4A)
 
-    /** Codes in one reply. Empty when the bus said nothing or refused. */
+    /**
+     * Codes in one reply. Empty when the bus said nothing or refused.
+     *
+     * Parsed through [IsoTp] so packed, multi-line and multi-ECU replies all
+     * count — the old spaced-only tokenizer read a packed reply as no codes,
+     * and a truck with stored faults looked clean.
+     */
     fun decode(mode: String, raw: String?): List<String> {
         val svc = SERVICE[mode.uppercase()] ?: return emptyList()
         if (raw.isNullOrBlank()) return emptyList()
@@ -27,67 +33,11 @@ object DtcDecode {
             return codesFrom(tokens.mapNotNull { it.toIntOrNull(16) }.drop(1))
         }
         val out = LinkedHashSet<String>()
-        var i = 0
-        while (i < tokens.size) {
-            val t = tokens[i]
-            if (isHeader(t)) {
-                i++
-                continue
+        IsoTp.messages(raw).forEach { m ->
+            if (m.size >= 2 && (m[0].toInt() and 0xFF) == svc) {
+                out += codesFrom(m.drop(1).map { it.toInt() and 0xFF })
             }
-            val pci = t.toIntOrNull(16)
-            if (pci == null) {
-                i++
-                continue
-            }
-            val data = mutableListOf<Int>()
-            when (pci ushr 4) {
-                // Single frame: length, then that many data bytes.
-                0 -> {
-                    val n = pci and 0x0F
-                    if (n == 0) {
-                        i++
-                        continue
-                    }
-                    for (k in 0 until n) data += byteAt(tokens, i + 1 + k)
-                    i += 1 + n
-                }
-                // First frame: total length, then ISO-TP reassembly.
-                1 -> {
-                    if (i + 1 >= tokens.size) break
-                    var need = ((pci and 0x0F) shl 8) + (tokens[i + 1].toIntOrNull(16) ?: break)
-                    i += 2
-                    // First frame holds 6 data bytes after its 2-byte PCI; each
-                    // consecutive frame holds 7 after its 1-byte PCI.
-                    var room = 6
-                    while (need > 0 && i < tokens.size) {
-                        val f = tokens[i]
-                        if (isHeader(f)) {
-                            // Same message continuing ("7E8 21 …"). Anything else
-                            // is another ECU starting its own reply.
-                            val next = tokens.getOrNull(i + 1)?.toIntOrNull(16)
-                            if (room != 0 || next == null || next ushr 4 != 2) break
-                            i++
-                            continue
-                        }
-                        if (room == 0) {
-                            val v = f.toIntOrNull(16) ?: break
-                            if (v ushr 4 != 2) break
-                            i++
-                            room = 7
-                            continue
-                        }
-                        data += f.toIntOrNull(16) ?: break
-                        i++
-                        need--
-                        room--
-                    }
-                }
-                else -> i++
-            }
-            if (data.size >= 2 && data[0] == svc) {
-                out += codesFrom(data.drop(1))
-            }
-            // A 7F frame is a refusal, not codes — and not an error either.
+            // A 7F message is a refusal, not codes — and not an error either.
         }
         return out.toList()
     }
@@ -126,13 +76,6 @@ object DtcDecode {
         fun hex(n: Int) = "0123456789ABCDEF"[n and 0x0F]
         return "$prefix$d1${hex(a)}${hex(b ushr 4)}${hex(b)}"
     }
-
-    private fun byteAt(tokens: List<String>, i: Int): Int =
-        if (i in tokens.indices) tokens[i].toIntOrNull(16) ?: 0 else 0
-
-    /** 11-bit header echoes like 7E8 — reply metadata, never data. */
-    private fun isHeader(t: String): Boolean =
-        t.length == 3 && t.all { it.isDigit() || it in 'A'..'F' }
 }
 
 /** Everything one check-engine scan learned. Nulls mean the bus said nothing. */

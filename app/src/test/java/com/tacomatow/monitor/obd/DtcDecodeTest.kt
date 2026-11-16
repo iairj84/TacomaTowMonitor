@@ -86,4 +86,23 @@ class DtcDecodeTest {
         assertNull(DtcDecode.mil(null))
         assertNull(DtcDecode.mil(byteArrayOf()))
     }
+
+    @Test
+    fun `packed stored code decodes`() {
+        // No spaces at all: the old spaced-only tokenizer read this as clean.
+        assertEquals(listOf("P0301"), DtcDecode.decode("03", "7E80443010301"))
+    }
+
+    @Test
+    fun `multiline packed replies from two ECUs decode`() {
+        assertEquals(
+            listOf("P0301", "P0302"),
+            DtcDecode.decode("03", "7E80443010301\r7E90443020302"),
+        )
+    }
+
+    @Test
+    fun `packed refusal is not a code`() {
+        assertTrue(DtcDecode.decode("03", "7E8037F2231").isEmpty())
+    }
 }

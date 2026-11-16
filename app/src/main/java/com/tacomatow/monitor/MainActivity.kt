@@ -171,9 +171,13 @@ class MainActivity : ComponentActivity() {
 
         // Set-and-forget: once a real adapter connects, keep polling with the
         // screen off without asking. Demo mode is excluded (no hardware).
+        // A disconnect stops the "Reading trans temps" notification again —
+        // it used to linger after the session was gone.
         LaunchedEffect(state.connected, state.demoMode) {
             if (state.connected && !state.demoMode) {
                 startForegroundService(Intent(this@MainActivity, ObdForegroundService::class.java))
+            } else {
+                stopService(Intent(this@MainActivity, ObdForegroundService::class.java))
             }
         }
 

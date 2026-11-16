@@ -21,6 +21,8 @@ data class PidDef(
     val pid: String,
     /** ELM header override, e.g. "701". Null = default / functional. */
     val header: String? = null,
+    /** Transmission decode variant, e.g. "1627" or "82". Picks the formula. */
+    val kind: String? = null,
     val unit: String,
     val minF: Float? = null,
     val warnF: Float? = null,
@@ -34,6 +36,7 @@ object TacomaPids {
         mode = "22",
         pid = "1627",
         header = "701",
+        kind = "1627",
         unit = "°F",
         warnF = 220f,
         critF = 240f,
@@ -44,6 +47,7 @@ object TacomaPids {
         mode = "22",
         pid = "1628",
         header = "701",
+        kind = "1628",
         unit = "°F",
         warnF = 230f,
         critF = 250f,
@@ -131,6 +135,7 @@ object TacomaPids {
         mode = candidate.mode,
         pid = candidate.pid,
         header = candidate.header,
+        kind = candidate.kind,
         unit = "°F",
         warnF = warnF,
         critF = critF,
@@ -171,11 +176,11 @@ object TacomaPids {
         val a = bytes[0].toInt() and 0xFF
         val b = if (bytes.size > 1) bytes[1].toInt() and 0xFF else 0
         return when (def.id) {
-            "trans_pan", "trans_conv" -> {
-                // Owner-verified °F equation for 221627 / 221628.
-                if (bytes.size < 2) null
-                else (a * 459f / 255f) + (b * 1.6f / 255f) - 40f
-            }
+            // The candidate that answered sets the formula: a 21/82 detection
+            // answered in °C*10, not the 1627 equation. Dropping the kind
+            // here once decoded the same bytes to 14 °F that detection had
+            // read as 57 °F.
+            "trans_pan", "trans_conv" -> decodeTrans(def.kind ?: "1627", bytes)
             "coolant" -> celsiusToF(a - 40)
             "oil" -> celsiusToF(a - 40)
             "rpm" -> if (bytes.size < 2) null else ((a * 256f) + b) / 4f

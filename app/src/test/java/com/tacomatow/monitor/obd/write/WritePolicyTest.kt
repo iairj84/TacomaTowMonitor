@@ -217,4 +217,44 @@ class WritePolicyTest {
             assertTrue("empty detail for ${decision.rule}", decision.detail.isNotBlank())
         }
     }
+
+    @Test
+    fun `console refuses every truck-write service`() {
+        listOf("04", "2E220101", "2F Foo", "31", "34", "35", "36", "37", "38", "3B1E", "3D")
+            .forEach { cmd ->
+                val refusal = WritePolicy.consoleRefusal("7C0", cmd)
+                assertTrue("$cmd went out", refusal != null)
+            }
+    }
+
+    @Test
+    fun `console allows reads and adapter identity`() {
+        listOf("0100", "0904", "2114", "221627", "ATI", "ATDPN", "ATRV", "3E80", "1003")
+            .forEach { cmd ->
+                assertEquals(
+                    "$cmd refused",
+                    null,
+                    WritePolicy.consoleRefusal(if (cmd.startsWith("AT")) null else "7C0", cmd),
+                )
+            }
+    }
+
+    @Test
+    fun `console refuses adapter resets but not adapter reads`() {
+        assertTrue(WritePolicy.consoleRefusal(null, "ATZ") != null)
+        assertTrue(WritePolicy.consoleRefusal(null, "ATSP6") != null)
+        assertTrue(WritePolicy.consoleRefusal(null, "ATD") != null)
+        // ATDP reads the protocol: shares a prefix with ATD, must stay.
+        assertEquals(null, WritePolicy.consoleRefusal(null, "ATDP"))
+        assertEquals(null, WritePolicy.consoleRefusal(null, "ATDPN"))
+    }
+
+    @Test
+    fun `console refuses smuggled line breaks and bad headers`() {
+        assertTrue(WritePolicy.consoleRefusal("7C0", "2114\r04") != null)
+        assertTrue(WritePolicy.consoleRefusal("7C0; DROP", "2114") != null)
+        assertTrue(WritePolicy.consoleRefusal("7C0", "") != null)
+        assertEquals(null, WritePolicy.consoleRefusal("7C0", "2114"))
+        assertEquals(null, WritePolicy.consoleRefusal(null, "2114"))
+    }
 }

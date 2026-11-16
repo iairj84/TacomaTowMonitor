@@ -142,7 +142,11 @@ class Elm327Client(
         repeat(2) { attempt ->
             val raw = transport.transact(cmd, 3_500)
             if (raw != null) {
-                val noData = raw.contains("NODATA") || raw.contains("?") || raw.contains("ERROR")
+                // The adapter prints "NO DATA" with a space; collapse it
+                // before matching or unsupported PIDs are never recognised
+                // and get retried on every sweep.
+                val flat = raw.replace(" ", "").uppercase()
+                val noData = flat.contains("NODATA") || flat.contains("?") || flat.contains("ERROR")
                 // "OK", "?" or "SEARCHING..." is the adapter talking about
                 // itself, not an answer from the truck. Parsing those as a
                 // reply is how a desynced clone produces phantom results.
@@ -177,14 +181,18 @@ class Elm327Client(
             t.startsWith("SEARCHING") || t.contains("UNABLE TO CONNECT")
     }
 
+    /**
+     * A negative response is a *message* starting with 0x7F, parsed through
+     * IsoTp so packed and multi-line replies count. The old scan for a bare
+     * "7F" token missed every packed refusal and could mistake a data byte
+     * for one.
+     */
     fun negativeResponse(raw: String): String? {
-        val tokens = raw.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
-        for (i in tokens.indices) {
-            if (tokens[i].equals("7F", ignoreCase = true) && i + 2 < tokens.size) {
-                return "7F ${tokens[i + 1].uppercase()} ${tokens[i + 2].uppercase()}"
-            }
-        }
-        return null
+        val msg = IsoTp.messages(raw).firstOrNull { m ->
+            m.isNotEmpty() && (m[0].toInt() and 0xFF) == 0x7F
+        } ?: return null
+        if (msg.size < 3) return null
+        return "7F %02X %02X".format(msg[1], msg[2])
     }
 
     /**
@@ -197,9 +205,28 @@ class Elm327Client(
         if (!open) return false
         setHeader(null)
         val r = transport.transact("1003", 2_500)
-        // Only "50 03" is acceptance. A silent "NO DATA" used to be counted
-        // as success, which made the log claim an open session that never was.
-        return r != null && r.replace(" ", "").uppercase().startsWith("50")
+        // Only a 0x50 message is acceptance. A silent "NO DATA" used to be
+        // counted as success, which made the log claim an open session that
+        // never was — and with headers on, the reply starts with the CAN ID
+        // ("7E8 06 50 03 …"), so a prefix check could never succeed either.
+        return r != null && IsoTp.messages(r).any { m ->
+            m.isNotEmpty() && (m[0].toInt() and 0xFF) == 0x50
+        }
+    }
+
+    /**
+     * TesterPresent with response suppression, for long sweeps. The extended
+     * session lapses after a few idle seconds; a sweep that never says hello
+     * loses it halfway through. Suppressed (0x80) so ECUs stay silent — the
+     * ELM just waits out its own short internal timeout. Best effort.
+     */
+    fun sendTesterPresent() {
+        if (!open) return
+        try {
+            setHeader(null)
+            transport.transact("3E80", 600)
+        } catch (_: Exception) {
+        }
     }
 
     /**

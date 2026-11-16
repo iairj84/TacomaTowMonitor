@@ -13,16 +13,24 @@ package com.tacomatow.monitor.obd
  * ECU what it has and shows the raw answer. Nothing here writes.
  *
  * Addresses (11-bit):
- *   0x750  main body ECU   (locks, lights, chimes, wireless)
+ *   0x750  gateway, NOT an ECU: fans out by sub-target address, 0x40 below
+ *   0x750/0x40  main body ECU (locks, lights, chimes, wireless) via gateway
  *   0x7C0  combination meter (warning buzzers, displays)
  *   0x7C4  A/C amplifier   (climate customization)
  */
 object CustomizeExplorer {
 
-    data class Target(val header: String, val label: String)
+    /**
+     * One sweep destination. [sub] is a gateway sub-target (ISO 15765-2 mixed
+     * addressing): 0x750 is a relay, and the first byte of every frame names
+     * the downstream ECU — 0x40 is Main Body. A bare "21 XX" to 750 names
+     * nobody and is never answered, which is why the gateway used to look
+     * like 63 blocks of dead air.
+     */
+    data class Target(val header: String, val label: String, val sub: Int? = null)
 
     val TARGETS = listOf(
-        Target("750", "Main body ECU"),
+        Target("750", "Main body ECU (gateway 0x40)", 0x40),
         Target("7C0", "Combination meter"),
         Target("7C4", "A/C amplifier"),
         Target("7C6", "Smart key / certification"),
@@ -34,6 +42,21 @@ object CustomizeExplorer {
     val totalProbes: Int get() = TARGETS.size * LID_RANGE.count()
 
     fun readCommand(lid: Int): String = "21" + "%02X".format(lid)
+
+    /**
+     * Bytes to send for one probe. Gateway targets are prefixed with the
+     * sub-target and a single-frame length covering only the bytes after it:
+     * LID 0x14 at Main Body goes out as "40 02 21 14". Replies arrive on
+     * 0x758 and are stripped back by [IsoTp].
+     */
+    fun probeCommand(target: Target, lid: Int): String {
+        val read = readCommand(lid)
+        return if (target.sub != null) "%02X02%s".format(target.sub, read) else read
+    }
+
+    /** Extended-session request framed for the target (gateway included). */
+    fun sessionCommand(target: Target): String =
+        if (target.sub != null) "%02X021003".format(target.sub) else "1003"
 
     fun hex(bytes: ByteArray?): String? =
         bytes?.joinToString(" ") { "%02X".format(it) }

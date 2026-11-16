@@ -77,9 +77,13 @@ object CustomizeMapping {
         val out = mutableListOf<ChangeRecord>()
         for (i in 0 until array.length()) {
             val o = array.optJSONObject(i) ?: continue
-            val lid = o.optString("lid").trim().toIntOrNull(16)
-                ?: o.optInt("lid", -1).takeIf { it in 0..0xFF }
-                ?: continue
+            // Exported as a hex string ("1E"); a JSON number is decimal —
+            // optString coerces 30 to "30", which parses as 0x30 = 48.
+            val lid = when (val v = o.opt("lid")) {
+                is Number -> v.toInt().takeIf { it in 0..0xFF }
+                else -> o.optString("lid").trim().removePrefix("0x").removePrefix("0X")
+                    .toIntOrNull(16)
+            } ?: continue
             val before = o.optString("before").trim()
             val after = o.optString("after").trim()
             if (before.isEmpty() || after.isEmpty()) continue

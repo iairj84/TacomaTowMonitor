@@ -46,7 +46,10 @@ class SppTransport(
     private val device: BluetoothDevice,
 ) : ElmTransport {
     companion object {
-        val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-0085F9B42D9F")
+        // The standard Serial Port Profile UUID. A transposed digit here used
+        // to mean classic Bluetooth could never connect — only BLE dongles
+        // worked at all.
+        val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
         private const val PROMPT = '>'
     }
 
@@ -54,6 +57,14 @@ class SppTransport(
     private var input: InputStream? = null
     private var output: OutputStream? = null
     private val log = mutableListOf<String>()
+    private var linkLostHandler: (() -> Unit)? = null
+
+    /** True once a full exchange has completed on this socket. */
+    @Volatile private var hadLink = false
+
+    override fun onLinkLost(handler: () -> Unit) {
+        linkLostHandler = handler
+    }
 
     /** Setup stage, mirrored into the adapter log / error text. */
     @Volatile var stage = "starting"
@@ -78,6 +89,7 @@ class SppTransport(
             output = sock.outputStream
             stage = "ready"
             note("classic: socket up")
+            hadLink = true
             true
         } catch (e: Exception) {
             // The usual cause: a BLE-only dongle has no RFCOMM service at all.
@@ -97,6 +109,7 @@ class SppTransport(
             out.write((cmd + "\r").toByteArray())
             out.flush()
         } catch (_: Exception) {
+            onBrokenLink("classic: write failed")
             return null
         }
         val sb = StringBuilder()
@@ -109,7 +122,10 @@ class SppTransport(
                     if (n > 0) {
                         for (i in 0 until n) {
                             val c = buf[i].toInt().toChar()
-                            if (c == PROMPT) return sb.toString().uppercase()
+                            if (c == PROMPT) {
+                                hadLink = true
+                                return sb.toString().uppercase()
+                            }
                             sb.append(c)
                         }
                     }
@@ -118,12 +134,30 @@ class SppTransport(
                 }
             }
         } catch (_: Exception) {
+            onBrokenLink("classic: read failed")
             return null
         }
         return null
     }
 
+    /**
+     * An IOException means the socket died — the dongle lost power, drove
+     * out of range, or another app stole it. Before this, isConnected() stayed
+     * true and the app showed "connected" with blank gauges forever.
+     * Fires once per link; a clean close() never fires.
+     */
+    private fun onBrokenLink(note: String) {
+        if (!hadLink) return
+        hadLink = false
+        note(note)
+        try {
+            linkLostHandler?.invoke()
+        } catch (_: Exception) {
+        }
+    }
+
     override fun close() {
+        hadLink = false
         try { input?.close() } catch (_: Exception) {}
         try { output?.close() } catch (_: Exception) {}
         try { socket?.close() } catch (_: Exception) {}
@@ -533,10 +567,14 @@ class BleTransport(
         rx.clear()
         return try {
             val payload = (cmd + "\r").toByteArray()
-            val chunk = (mtu - 3).coerceAtLeast(20)
             // Honor what the clone actually supports: many BLE ELMs expose
             // WRITE_NO_RESPONSE only, and a DEFAULT write is refused outright.
             val noAck = (w.properties and BluetoothGattCharacteristic.PROPERTY_WRITE) == 0
+            // Fire-and-forget writes have no acknowledgements for the stack to
+            // fragment on, so clones silently drop anything past ~20 bytes.
+            // Cap those at the size every clone accepts; acknowledged writes
+            // keep the negotiated MTU.
+            val chunk = if (noAck) 20 else (mtu - 3).coerceAtLeast(20)
             var off = 0
             while (off < payload.size) {
                 val end = minOf(off + chunk, payload.size)
@@ -558,7 +596,9 @@ class BleTransport(
                     stage = "write-refused"
                     return null
                 }
-                if (!noAck) Thread.sleep(40) // small gap keeps cheap clones happy
+                // Small gap between pieces keeps cheap clones happy — paced
+                // writes are what future multi-byte block writes will rely on.
+                Thread.sleep(if (noAck) 25 else 40)
                 off = end
             }
             val sb = StringBuilder()

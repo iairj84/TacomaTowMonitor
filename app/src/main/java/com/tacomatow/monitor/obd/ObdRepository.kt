@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.tacomatow.monitor.obd.write.WritePolicy
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -263,6 +264,10 @@ class ObdRepository(
         onDone: (Boolean, String?) -> Unit = { _, _ -> },
     ) {
         stopPoll()
+        // A previous session's client must not survive: an auto-reconnect in
+        // flight plus a fresh pick left two sessions fighting over one dongle.
+        try { client?.close() } catch (_: Exception) { }
+        client = null
         oilMisses = 0
         // Remembered so a dropped link can be rebuilt without the driver
         // touching anything — including after a stop, which is when a BLE
@@ -398,7 +403,7 @@ class ObdRepository(
                     c, TacomaPids.CONVERTER_CANDIDATES.first(), "trans_conv", "T-Conv Out", 230f, 250f,
                 )?.let { convDef = it }
             }
-            _state.update { it.copy(diagnostics = it.diagnostics + detectLog) }
+            _state.update { it.copy(diagnostics = (it.diagnostics + detectLog).takeLast(400)) }
             return
         }
 
@@ -490,7 +495,7 @@ class ObdRepository(
             delay(120)
         }
         transDetected = panFound
-        _state.update { it.copy(diagnostics = it.diagnostics + detectLog) }
+        _state.update { it.copy(diagnostics = (it.diagnostics + detectLog).takeLast(400)) }
     }
 
     /**
@@ -513,8 +518,8 @@ class ObdRepository(
         )?.let { convDef = it }
         _state.update {
             it.copy(
-                diagnostics = it.diagnostics +
-                    "late detect: truck woke up, transmission PIDs active",
+                                    diagnostics = (it.diagnostics +
+                        "late detect: truck woke up, transmission PIDs active").takeLast(400),
                 powertrainAsleep = false,
             )
         }
@@ -526,7 +531,7 @@ class ObdRepository(
      */
     suspend fun runAdapterCheck(): AdapterReport {
         val c = client ?: return AdapterReport.notConnected()
-        pollJob?.cancel()
+        takeAdapter()
         try {
             suspend fun ask(header: String?, cmd: String, ms: Int = 4_000): String? =
                 runBlockingProbe(c, header, cmd, ms)
@@ -536,7 +541,9 @@ class ObdRepository(
             val baseline = ask(null, "0100", 4_000)
             val session = ask(null, "1003", 2_500)
             val trans = ask("701", "221627", 4_000)
-            val body = ask("750", "2114", 3_000)
+            // Gateway-routed: bare "21 14" to 750 names no sub-target and is
+            // never answered. Frame it for Main Body at 0x40 instead.
+            val body = ask("750", CustomizeExplorer.probeCommand(CustomizeExplorer.TARGETS[0], 0x14), 3_000)
             // Ask the baseline again AFTER the manufacturer probes. Some clones
             // wedge on mode 21/22 and stop answering anything for a few seconds,
             // which made this check blame the connection. Comparing before and
@@ -570,11 +577,18 @@ class ObdRepository(
      */
     suspend fun sweepDids(onProgress: (done: Int, total: Int, did: String) -> Unit): List<DidProbe> {
         val c = client ?: return emptyList()
+        takeAdapter()
         val dids = DidSweep.dids()
-        return withContext(Dispatchers.IO) {
-            try { c.enterExtendedSession() } catch (_: Exception) { }
-            val out = mutableListOf<DidProbe>()
-            dids.forEachIndexed { index, did ->
+        return try {
+            withContext(Dispatchers.IO) {
+                try { c.enterExtendedSession() } catch (_: Exception) { }
+                var lastKeepAlive = System.currentTimeMillis()
+                val out = mutableListOf<DidProbe>()
+                dids.forEachIndexed { index, did ->
+                    if (System.currentTimeMillis() - lastKeepAlive > 4_000) {
+                        try { c.sendTesterPresent() } catch (_: Exception) { }
+                        lastKeepAlive = System.currentTimeMillis()
+                    }
                 val cmd = "22$did"
                 val raw = try {
                     c.readRaw(DidSweep.HEADER, cmd, 1_200)
@@ -595,22 +609,36 @@ class ObdRepository(
                     payloadHex = bytes?.let { CustomizeExplorer.hex(it) },
                     refusal = refusal,
                 )
-                withContext(Dispatchers.Main) { onProgress(index + 1, dids.size, did) }
-                delay(60)
+                    withContext(Dispatchers.Main) { onProgress(index + 1, dids.size, did) }
+                    delay(60)
+                }
+                out
             }
-            out
+        } finally {
+            if (_state.value.connected) startPoll(c)
         }
     }
 
-    /** Raw command for the diagnostics console. Read-only by nature of what the UI sends. */
+    /**
+     * Raw command for the diagnostics console. Takes the adapter exclusively
+     * (a probe mid-poll would go out under the wrong header) and refuses
+     * anything that writes to the truck — mode 04, 2E/2F/31, 3B and friends
+     * never go out, including from here. See [WritePolicy.consoleRefusal].
+     */
     suspend fun sendRaw(header: String?, command: String): String? {
         val c = client ?: return null
-        return withContext(Dispatchers.IO) {
-            try {
-                c.readRaw(header?.takeIf { it.isNotBlank() }, command, 5_000)
-            } catch (_: Exception) {
-                null
+        WritePolicy.consoleRefusal(header, command)?.let { return it }
+        takeAdapter()
+        return try {
+            withContext(Dispatchers.IO) {
+                try {
+                    c.readRaw(header?.takeIf { it.isNotBlank() }, command, 5_000)
+                } catch (_: Exception) {
+                    null
+                }
             }
+        } finally {
+            if (_state.value.connected) startPoll(c)
         }
     }
 
@@ -721,8 +749,26 @@ class ObdRepository(
                 try { c.enterExtendedSession() } catch (_: Exception) { false }
             }
             onProgress(0, total)
+            val sessionedSubs = mutableSetOf<String>()
+            var lastKeepAlive = System.currentTimeMillis()
             for ((target, lid) in plan) {
-                val cmd = CustomizeExplorer.readCommand(lid)
+                // The gateway needs a session on the sub-target itself, once
+                // per sweep — best effort, and silent either way.
+                if (target.sub != null && sessionedSubs.add(target.header + "/" + target.sub)) {
+                    withContext(Dispatchers.IO) {
+                        try {
+                            c.readRaw(target.header, CustomizeExplorer.sessionCommand(target), 2_000)
+                        } catch (_: Exception) {
+                        }
+                    }
+                }
+                if (System.currentTimeMillis() - lastKeepAlive > 4_000) {
+                    withContext(Dispatchers.IO) {
+                        try { c.sendTesterPresent() } catch (_: Exception) { }
+                    }
+                    lastKeepAlive = System.currentTimeMillis()
+                }
+                val cmd = CustomizeExplorer.probeCommand(target, lid)
                 val raw = withContext(Dispatchers.IO) {
                     try { c.readRaw(target.header, cmd, timeout) } catch (_: Exception) { null }
                 }
@@ -750,7 +796,11 @@ class ObdRepository(
         if (pollingPaused) return
         pollJob?.cancel()
         pollJob = scope.launch {
-            detectTransmission(c)
+            // Detection runs only until it succeeds: every code scan or sweep
+            // used to resend 10 03 and re-probe all candidates, and the log
+            // grew without bound. A truck that wakes up after connect is
+            // covered by the 25 s re-probe instead.
+            if (!transDetected) detectTransmission(c)
             // BLE clones lose the odd reply. A single miss must never wipe a
             // gauge the driver is watching, so keep the last good value and
             // mark it HOLD until it goes properly stale.

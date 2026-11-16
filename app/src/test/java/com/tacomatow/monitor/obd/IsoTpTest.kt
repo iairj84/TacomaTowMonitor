@@ -71,6 +71,81 @@ class IsoTpTest {
         assertNull(client.payloadFor("2112", "7C8 10 09 61 12 00 20"))
     }
 
+    @Test
+    fun `multiline spaced frames reassemble`() {
+        // The ELM prints one CAN frame per line: a first frame and its
+        // consecutive frames always land on different lines.
+        val raw = "7E8 10 09 61 12 00 20 00 00\r7E8 21 00 00 00 00 00 00 00\r"
+        assertArrayEquals(
+            bytes(0x61, 0x12, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00),
+            IsoTp.messages(raw).single(),
+        )
+    }
+
+    @Test
+    fun `multiline packed lines parse independently`() {
+        val raw = "7C80461149A26\r7C90461141122\r"
+        val msgs = IsoTp.messages(raw)
+        assertEquals(2, msgs.size)
+        assertArrayEquals(bytes(0x61, 0x14, 0x9A, 0x26), msgs[0])
+        assertArrayEquals(bytes(0x61, 0x14, 0x11, 0x22), msgs[1])
+    }
+
+    @Test
+    fun `mixed spaced and packed lines both count`() {
+        val raw = "7E8 04 43 01 03 01\r7E90443010301"
+        val msgs = IsoTp.messages(raw)
+        assertEquals(2, msgs.size)
+        assertTrue(msgs.all { it[0] == 0x43.toByte() })
+    }
+
+    @Test
+    fun `gateway 758 reply strips sub-target spaced`() {
+        assertArrayEquals(
+            bytes(0x61, 0x14, 0x9A, 0x26),
+            IsoTp.messages("758 40 04 61 14 9A 26").single(),
+        )
+        assertArrayEquals(
+            bytes(0x9A, 0x26),
+            client.payloadFor("2114", "758 40 04 61 14 9A 26"),
+        )
+    }
+
+    @Test
+    fun `gateway 758 reply strips sub-target packed`() {
+        assertArrayEquals(
+            bytes(0x61, 0x14, 0x9A, 0x26),
+            IsoTp.messages("758400461149A26").single(),
+        )
+    }
+
+    @Test
+    fun `gateway multiline reassembles`() {
+        val raw = "758 40 10 09 61 12 00 20 00 00\r758 40 21 00 00 00 00 00 00 00\r"
+        assertArrayEquals(
+            bytes(0x61, 0x12, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00),
+            IsoTp.messages(raw).single(),
+        )
+    }
+
+    @Test
+    fun `AA padding tail is tolerated packed`() {
+        assertArrayEquals(
+            bytes(0x61, 0x14, 0x9A, 0x26),
+            IsoTp.messages("7E80461149A26AAAA").single(),
+        )
+    }
+
+    @Test
+    fun `zero padding inside packed does not hang`() {
+        // A 00 byte used to wedge the packed parser in an infinite loop:
+        // advancing by 2*n with n == 0 never moves.
+        assertArrayEquals(
+            bytes(0x61, 0x14),
+            IsoTp.messages("7C802611400").single(),
+        )
+    }
+
     // The real client, with a transport that can never answer: payloadFor is
     // pure parsing and never touches it.
     private val client = Elm327Client(object : ElmTransport {

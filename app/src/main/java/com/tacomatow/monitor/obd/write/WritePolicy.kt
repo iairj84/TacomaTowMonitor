@@ -216,4 +216,67 @@ object WritePolicy {
 
     private fun refuse(rule: RefusalRule, message: String, detail: String) =
         WriteDecision.Refuse(rule, message, detail)
+
+    /** Services that write to the truck. The console may never send these. */
+    private val CONSOLE_REFUSED_SERVICES = mapOf(
+        "04" to "clearing diagnostic codes",
+        "2E" to "writing a data identifier",
+        "2F" to "controlling an input/output",
+        "31" to "running a routine",
+        "34" to "requesting a download",
+        "35" to "requesting an upload",
+        "36" to "transferring data",
+        "37" to "ending a transfer",
+        "38" to "transferring a file",
+        "3B" to "writing a customization block",
+        "3D" to "writing a data identifier",
+    )
+
+    /** AT commands that reset or re-protocol the adapter mid-session. */
+    private val CONSOLE_REFUSED_AT = setOf("Z", "WS", "D", "SP", "PC")
+
+    /**
+     * Gate for the diagnostics console's free-text header/command. Returns the
+     * refusal to show, or null when the command may go out.
+     *
+     * This is how "never writes" is enforced rather than promised: write
+     * services are refused under any header, adapter resets are refused
+     * because they desync the session, and embedded line breaks are refused
+     * because they would smuggle a second command past the ELM. Other AT
+     * commands are adapter-local — they cannot write the truck — so reads
+     * like ATI and ATRV stay available for diagnosis.
+     */
+    fun consoleRefusal(header: String?, command: String): String? {
+        val cmd = command.trim().uppercase()
+        if (cmd.isEmpty()) return "Nothing to send."
+        if (cmd.any { it == '\r' || it == '\n' }) {
+            return "Refused: one command at a time — a line break would smuggle a second command to the adapter."
+        }
+        val h = header?.trim().orEmpty()
+        if (h.isNotEmpty() && (h.length > 4 || h.any { it !in '0'..'9' && it !in 'A'..'F' })) {
+            return "Refused: \"$h\" is not an 11-bit header (up to 4 hex digits)."
+        }
+        if (cmd.startsWith("AT")) {
+            val word = cmd.removePrefix("AT").split(Regex("\\s+")).firstOrNull().orEmpty()
+            val resets = CONSOLE_REFUSED_AT.any { at ->
+                word == at || (word.startsWith(at) && word.drop(at.length).all { it.isDigit() })
+            }
+            if (resets) {
+                return "Refused: $word resets or reprotocols the adapter mid-session — reconnect from the dashboard instead."
+            }
+            return null
+        }
+        val hex = cmd.replace(" ", "")
+        if (hex.length < 2 || hex.length % 2 != 0 ||
+            hex.any { it !in '0'..'9' && it !in 'A'..'F' }
+        ) {
+            return "Refused: not a hex command or AT command."
+        }
+        val what = CONSOLE_REFUSED_SERVICES[hex.substring(0, 2)]
+        if (what != null) {
+            return "Refused: service ${hex.substring(0, 2)} ($what) writes to the truck — " +
+                "this app never sends it, including from the console."
+        }
+        return null
+    }
 }

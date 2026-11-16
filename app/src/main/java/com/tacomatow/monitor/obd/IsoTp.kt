@@ -10,8 +10,20 @@ package com.tacomatow.monitor.obd
  * character, which kept the first frame, silently dropped the rest, and folded
  * headers and PCI bytes into the payload when no spaces were present. Block
  * 0x12 at 7C0 is the exhibit: a 9-byte reply displayed as 4 bytes.
+ *
+ * Replies are normalised once here: split on carriage returns, one CAN frame
+ * per line the way the ELM prints them, each line parsed with the fitting
+ * parser (spaced or packed). A whole-text pass runs first so a first frame
+ * on one line still joins its consecutive frames on the next lines.
+ *
+ * The 0x750 gateway answers on 0x758 with the sub-target address (e.g.
+ * 0x40 Main Body) as the first byte — ISO 15765-2 mixed addressing. That
+ * byte is consumed like a second header before PCI parsing.
  */
 object IsoTp {
+
+    /** Reply ID of the 0x750 gateway: first byte after it is the sub-target. */
+    private const val GATEWAY_REPLY_ID = "758"
 
     /** Every complete message in the reply: data bytes after any PCI, headers gone. */
     fun messages(raw: String): List<ByteArray> {
@@ -19,10 +31,28 @@ object IsoTp {
         if (upper.contains("NO DATA") || upper.contains("UNABLE TO CONNECT") ||
             upper.contains("ERROR") || upper.contains("STOPPED") || upper.contains("?")
         ) return emptyList()
-        val tokens = upper.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        val lines = upper.split('\r', '\n').map { it.trim() }.filter { it.isNotEmpty() }
+        if (lines.isEmpty()) return emptyList()
+        if (lines.size == 1) return messagesLine(lines[0])
+        val out = messagesTokenized(lines.flatMap { it.splitToTokens() }).toMutableList()
+        // A spaceless line is packed — a shared log, or a clone that omits
+        // spaces. Its giant token is skipped by the pass above, so parse it
+        // on its own. Disjoint by construction: equal bytes from two lines
+        // are two replies (e.g. two ECUs with the same codes), never dupes.
+        lines.filter { line -> line.none { it.isWhitespace() } }.forEach { line ->
+            out += messagesPacked(line)
+        }
+        return out
+    }
+
+    private fun messagesLine(line: String): List<ByteArray> {
+        val tokens = line.splitToTokens()
         if (tokens.isEmpty()) return emptyList()
         return if (tokens.size == 1) messagesPacked(tokens[0]) else messagesTokenized(tokens)
     }
+
+    private fun String.splitToTokens(): List<String> =
+        trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
 
     /** First message whose data starts with these bytes, or null. */
     fun firstStartingWith(raw: String, echo: ByteArray): ByteArray? =
@@ -38,6 +68,11 @@ object IsoTp {
         while (i < tokens.size) {
             val t = tokens[i]
             if (isHeader(t)) {
+                // Gateway reply: consume the sub-target address byte too.
+                if (t == GATEWAY_REPLY_ID) {
+                    val ae = tokens.getOrNull(i + 1)
+                    if (ae != null && ae.length == 2 && ae.toIntOrNull(16) != null) i++
+                }
                 i++
                 continue
             }
@@ -67,13 +102,24 @@ object IsoTp {
                         val f = tokens[i]
                         if (isHeader(f)) {
                             // Same message continuing ("7E8 21 …"). Anything
-                            // else is another ECU starting its own reply.
-                            val next = tokens.getOrNull(i + 1)?.toIntOrNull(16)
+                            // else is another ECU starting its own reply. A
+                            // gateway continuation carries its sub-target
+                            // address after the 758 header — skip both.
+                            var j = i + 1
+                            if (f == GATEWAY_REPLY_ID) {
+                                val ae = tokens.getOrNull(j)
+                                if (ae == null || ae.length != 2 || ae.toIntOrNull(16) == null) {
+                                    broken = true
+                                    break
+                                }
+                                j++
+                            }
+                            val next = tokens.getOrNull(j)?.toIntOrNull(16)
                             if (room != 0 || next == null || next ushr 4 != 2) {
                                 broken = true
                                 break
                             }
-                            i++
+                            i = j
                             continue
                         }
                         if (f.length != 2) {
@@ -116,10 +162,28 @@ object IsoTp {
         if (s.length < 2 || s.any { !it.isDigit() && it !in 'A'..'F' }) return emptyList()
         // Frames may or may not carry their header, but a session is
         // consistent — and whichever way parses the whole string exactly is
-        // the right reading. Partial parses fail closed, never misaligned.
-        return parsePacked(s, withHeaders = true).takeIf { it.second == s.length }?.first
-            ?: parsePacked(s, withHeaders = false).takeIf { it.second == s.length }?.first
+        // the right reading. Partial parses fail closed, never misaligned,
+        // except for documented padding bytes some clones append (AA/55).
+        fun accept(p: Pair<List<ByteArray>, Int>): List<ByteArray>? =
+            if (p.second == s.length ||
+                (p.first.isNotEmpty() && isPaddingTail(s, p.second))
+            ) p.first else null
+        return accept(parsePacked(s, withHeaders = true))
+            ?: accept(parsePacked(s, withHeaders = false))
             ?: emptyList()
+    }
+
+    /** Trailing padding clones append after the last complete message. */
+    private fun isPaddingTail(s: String, pos: Int): Boolean {
+        if (pos >= s.length || (s.length - pos) % 2 != 0) return false
+        var j = pos
+        while (j < s.length) {
+            when (s.substring(j, j + 2)) {
+                "AA", "55", "00" -> j += 2
+                else -> return false
+            }
+        }
+        return true
     }
 
     private fun parsePacked(s: String, withHeaders: Boolean): Pair<List<ByteArray>, Int> {
@@ -127,13 +191,28 @@ object IsoTp {
         var i = 0
         while (i < s.length) {
             val frameStart = i
-            if (withHeaders && isCanIdAt(s, i)) i += 3
+            if (withHeaders && isCanIdAt(s, i)) {
+                val gateway = s.startsWith(GATEWAY_REPLY_ID, i)
+                i += 3
+                // Gateway replies carry the sub-target address before the PCI.
+                // Non-hex here fails the PCI parse below — fail closed.
+                if (gateway) {
+                    if (i + 2 > s.length) return out to frameStart
+                    i += 2
+                }
+            }
             if (i + 2 > s.length) return out to frameStart
             val pci = s.substring(i, i + 2).toIntOrNull(16) ?: return out to frameStart
             i += 2
             when (pci ushr 4) {
                 0 -> {
                     val n = pci and 0x0F
+                    if (n == 0) {
+                        // Zero-length frame: 00 padding between frames. It must
+                        // be consumed — advancing by 2*n would never move and
+                        // hang the parser on any reply containing a 00 byte.
+                        continue
+                    }
                     if (i + 2 * n > s.length) return out to frameStart
                     out += s.substring(i, i + 2 * n).chunked(2)
                         .map { it.toInt(16).toByte() }.toByteArray()
@@ -147,7 +226,14 @@ object IsoTp {
                     var room = 6
                     while (need > 0) {
                         if (room == 0) {
-                            if (withHeaders && isCanIdAt(s, i)) i += 3
+                            if (withHeaders && isCanIdAt(s, i)) {
+                                val gateway = s.startsWith(GATEWAY_REPLY_ID, i)
+                                i += 3
+                                if (gateway) {
+                                    if (i + 2 > s.length) return out to frameStart
+                                    i += 2
+                                }
+                            }
                             if (i + 2 > s.length) return out to frameStart
                             val cf = s.substring(i, i + 2).toIntOrNull(16)
                                 ?: return out to frameStart
