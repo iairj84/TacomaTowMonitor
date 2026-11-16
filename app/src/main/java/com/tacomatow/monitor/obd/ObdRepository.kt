@@ -278,6 +278,9 @@ class ObdRepository(
         // touching anything — including after a stop, which is when a BLE
         // dongle is most likely to come back holding a dead session.
         lastSession = { beginSession(label, transports, onDone) }
+        lastLabel = label
+        lastTransports = transports
+        persistHandoff(false)
         autoReconnect = true
         _state.update {
             it.copy(error = null, demoMode = false, deviceName = label, diagnostics = emptyList())
@@ -1027,6 +1030,8 @@ class ObdRepository(
 
     /** Rebuilt on a dropped link; null until an adapter has been picked. */
     private var lastSession: (() -> Unit)? = null
+    private var lastLabel: String? = null
+    private var lastTransports: List<Pair<String, () -> ElmTransport>>? = null
     private var reconnectJob: Job? = null
     @Volatile private var autoReconnect = false
 
@@ -1066,7 +1071,60 @@ class ObdRepository(
         }
     }
 
+    /**
+     * Hand the dongle to another app: disconnect and stay disconnected. The
+     * link-loss reconnect and the launch auto-connect both stand down while
+     * armed, so this app never fights the other one for the dongle. Armed
+     * survives process death; any fresh session begun here disarms it.
+     */
+    @Volatile private var handoffArmed = false
+
+    private fun persistHandoff(armed: Boolean) {
+        handoffArmed = armed
+        try {
+            appContext?.getSharedPreferences("tacoma", android.content.Context.MODE_PRIVATE)
+                ?.edit()?.putBoolean("handoff_armed", armed)?.apply()
+        } catch (_: Exception) {
+        }
+    }
+
+    fun isHandoffArmed(): Boolean {
+        if (handoffArmed) return true
+        return try {
+            appContext?.getSharedPreferences("tacoma", android.content.Context.MODE_PRIVATE)
+                ?.getBoolean("handoff_armed", false) ?: handoffArmed
+        } catch (_: Exception) {
+            handoffArmed
+        }
+    }
+
+    fun handoffRelease() {
+        disconnect()
+        persistHandoff(true)
+    }
+
+    /**
+     * Back from the other app: rebuild the last session exactly the way a
+     * link-loss reconnect would. The caller re-scans once the callback says
+     * the link is up.
+     */
+    fun handoffResume(onDone: (Boolean, String?) -> Unit = { _, _ -> }) {
+        persistHandoff(false)
+        val t = lastTransports
+        val l = lastLabel
+        if (t == null || l == null) {
+            onDone(false, "No previous session — connect on the dashboard first.")
+            return
+        }
+        if (client != null) {
+            onDone(true, null)
+            return
+        }
+        beginSession(l, t, onDone)
+    }
+
     fun disconnect() {
+        persistHandoff(false)
         autoReconnect = false
         reconnectJob?.cancel()
         reconnectJob = null

@@ -56,6 +56,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.tacomatow.monitor.obd.BlockChange
 import com.tacomatow.monitor.obd.ChangeRecord
 import com.tacomatow.monitor.obd.CustomizeExplorer
@@ -105,6 +108,10 @@ private fun CustomizeScreen(onBack: () -> Unit) {
     var scanning by remember { mutableStateOf(false) }
     var done by remember { mutableIntStateOf(0) }
     var total by remember { mutableIntStateOf(0) }
+    // True while the dongle is released for the other app. Mirrors the
+    // repository's persisted handoff flag, which is the source of truth
+    // across process death.
+    var handedOff by remember { mutableStateOf(ObdHolder.repository.isHandoffArmed()) }
     var message by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -272,7 +279,7 @@ private fun CustomizeScreen(onBack: () -> Unit) {
         onDispose { ObdHolder.repository.setPollingPaused(false) }
     }
 
-    fun runScan(fast: Boolean) {
+    fun runScan(fast: Boolean, then: (List<LidReading>) -> Unit = {}) {
         message = null
         results.clear()
         done = 0
@@ -299,6 +306,7 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                 hits == 0 -> "No LIDs answered. This dongle may not pass multi-frame body-ECU replies."
                 else -> "$hits of ${found.size} probes answered. Bodies shown below."
             }
+            then(found)
         }
     }
 
@@ -313,6 +321,96 @@ private fun CustomizeScreen(onBack: () -> Unit) {
     }
     val diff: SnapshotDiff? = snapshot?.let {
         CustomizeExplorer.diff(it.readings, current, probedKeys, noiseBlocks)
+    }
+
+    /**
+     * Hand the dongle to the other app: bank a clean baseline if there is
+     * nothing pending, then disconnect and suspend auto-reconnect. A pending
+     * (unrecorded) diff is never clobbered — record its block first.
+     */
+    fun pressHandoff() {
+        if (scanning || handedOff) return
+        val snap = snapshot
+        if (snap != null && results.isNotEmpty() && diff?.identical == false) {
+            message = "This scan differs from the baseline — record the block first, " +
+                "or save a fresh snapshot, then hand off."
+            return
+        }
+        if (snap != null && results.isNotEmpty()) {
+            val banked = CustomizeSnapshotStore.Snapshot(
+                at = System.currentTimeMillis(),
+                readings = results.toList(),
+                label = snap.label,
+            )
+            snapshot = banked
+            CustomizeSnapshotStore.save(context, banked)
+        }
+        ObdHolder.repository.handoffRelease()
+        handedOff = true
+        message = "Dongle released — change the setting in the other app, then come " +
+            "back here. Reconnect and re-scan run on their own."
+    }
+
+    /**
+     * Back from the other app: reconnect, re-scan the known blocks, and diff
+     * against the baseline. Recording a block banks the new scan as the next
+     * baseline, so each setting is one tap out and one tap back.
+     */
+    fun returnFromHandoff() {
+        if (scanning) return
+        handedOff = false
+        val snap = snapshot
+        scanning = true
+        done = 0
+        total = 0
+        message = "Back — reconnecting…"
+        ObdHolder.repository.handoffResume { ok, why ->
+            if (!ok) {
+                scanning = false
+                message = why ?: "Couldn't get the adapter back — reconnect on the dashboard, then re-scan."
+                return@handoffResume
+            }
+            if (snap == null || knownBlocks.isEmpty()) {
+                scanning = false
+                message = "Reconnected. Save a snapshot, then hand off to map a setting."
+                return@handoffResume
+            }
+            runScan(fast = true) { found ->
+                val hits = found.count { it.supported }
+                if (hits == 0) return@runScan
+                val keys = knownBlocks.entries
+                    .flatMap { (header, lids) -> lids.map { header to it } }.toSet()
+                val after = CustomizeExplorer.diff(snap.readings, found, keys, noiseBlocks)
+                if (after.identical) {
+                    val banked = CustomizeSnapshotStore.Snapshot(
+                        at = System.currentTimeMillis(),
+                        readings = found,
+                        label = snap.label,
+                    )
+                    snapshot = banked
+                    CustomizeSnapshotStore.save(context, banked)
+                    message = "Reconnected, $hits blocks re-read, nothing moved — this scan " +
+                        "is banked as the baseline."
+                } else {
+                    message = "Reconnected, $hits blocks re-read. Record the block behind " +
+                        "the setting — recording banks this scan as the baseline for the next one."
+                }
+            }
+        }
+    }
+
+    // Returning from the other app fires ON_START — including on a fresh
+    // launch after process death, where the persisted handoff flag is the
+    // only trace that a hand-off was in flight.
+    val handoffOwner = LocalLifecycleOwner.current
+    DisposableEffect(handoffOwner) {
+        val obs = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_START && ObdHolder.repository.isHandoffArmed()) {
+                returnFromHandoff()
+            }
+        }
+        handoffOwner.lifecycle.addObserver(obs)
+        onDispose { handoffOwner.lifecycle.removeObserver(obs) }
     }
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
@@ -420,6 +518,33 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                                 val n = knownBlocks.values.sumOf { it.size }
                                 "$n blocks have answered on this truck — Re-scan known reads only those."
                             }
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (handedOff) {
+                            Button(
+                                onClick = { returnFromHandoff() },
+                                enabled = !scanning,
+                            ) { Text("Reconnect now") }
+                        } else {
+                            OutlinedButton(
+                                onClick = { pressHandoff() },
+                                enabled = !scanning && state.connected,
+                            ) { Text("Hand off") }
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        if (handedOff) {
+                            "Dongle is free for the other app. Reconnect and re-scan run when " +
+                                "you come back — or tap Reconnect now."
+                        } else {
+                            "Hand off releases the dongle so another app can use it, and " +
+                                "suspends auto-reconnect until you return. The new scan becomes " +
+                                "the baseline when you record its block."
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -641,7 +766,19 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                             if (added.isNotEmpty()) {
                                 records.addAll(added)
                                 CustomizeRecordStore.save(context, records.toList())
+                                // Recording closes the loop: this scan becomes the
+                                // baseline for the next setting.
+                                snapshot?.let { snap ->
+                                    val banked = CustomizeSnapshotStore.Snapshot(
+                                        at = System.currentTimeMillis(),
+                                        readings = results.toList(),
+                                        label = snap.label,
+                                    )
+                                    snapshot = banked
+                                    CustomizeSnapshotStore.save(context, banked)
+                                }
                                 message = "Recorded ${change.displayLid} ${change.ecuLabel} only. " +
+                                    "This scan is now the baseline — type the next setting and hand off again. " +
                                     "If that block and your setting disagree later, clear it and " +
                                     "try the next candidate."
                             }

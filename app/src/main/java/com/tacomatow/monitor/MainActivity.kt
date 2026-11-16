@@ -185,6 +185,8 @@ class MainActivity : ComponentActivity() {
         LaunchedEffect(lastMac) {
             val mac = lastMac ?: return@LaunchedEffect
             if (autoTried || state.connected || state.demoMode) return@LaunchedEffect
+            // Handed off: the dongle belongs to the other app until the driver comes back.
+            if (ObdHolder.repository.isHandoffArmed()) return@LaunchedEffect
             if (ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT)
                 != PackageManager.PERMISSION_GRANTED
             ) return@LaunchedEffect
