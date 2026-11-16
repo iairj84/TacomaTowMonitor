@@ -31,6 +31,27 @@ Toyota publication. Celsius variant: `((A*459/255)+(B*1.6/255)-72)*5/9`.
 Leave Torque diagnostic start/stop blank; scale ×1. This app has them
 preloaded — no manual PID entry.
 
+**Observed on this truck (2026-11-16).** 2019 TRD Off-Road, 3.5L V6 A/T, with a
+working BLE adapter: pan **103 °F**, converter-out **115 °F** against coolant
+160 °F at 25 mph / 1682 rpm. Both gauges populate from `221627` / `221628` at
+header `701`.
+
+That closes the question this project spent days on: the same build returned
+nothing but `NO DATA` / `CAN ERROR` from an ODBBLE clone reporting
+`ELM327 V2.1`, while basic mode 01 data streamed normally from it. The DID was
+never wrong and the truck always published it — the clone's CAN layer could not
+carry a manufacturer request and lock up quietly rather than answering with a
+refusal (`7F`).
+
+**Two checks that turn "plausible" into "verified".**
+
+- *Cold soak.* Park overnight, ignition on before starting, read the pan before
+the engine runs. It should sit within a couple of degrees of ambient air
+temperature. That validates scale and offset far better than any warm reading.
+- *Load.* A long climb should push converter-out clearly above pan, then let
+them converge at steady cruise. If they behave the other way round, the two
+DIDs are mapped to the wrong gauges.
+
 **Tow thresholds (defaults, editable in `TacomaPids.kt`)**
 pan WARN 220 / CRIT 240 °F · converter WARN 230 / CRIT 250 °F ·
 coolant WARN 223 / CRIT 235 °F. Rule of thumb: pan past 220 back off,
