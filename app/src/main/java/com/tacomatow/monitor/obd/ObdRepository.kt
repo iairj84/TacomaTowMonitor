@@ -19,6 +19,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 import kotlin.math.sin
 import kotlin.random.Random
 
@@ -71,6 +72,8 @@ class ObdRepository(
     val state: StateFlow<ObdUiState> = _state.asStateFlow()
 
     private var client: Elm327Client? = null
+    private var appContext: android.content.Context? = null
+    private var lastMac: String = ""
     /** Set at connect: the adapter named itself as an ELM327-class device. */
     @Volatile private var identityOk = true
     private var pollJob: Job? = null
@@ -107,6 +110,32 @@ class ObdRepository(
 
     fun setMonitors(ids: Set<String>) {
         enabled = ids.toSet()
+    }
+
+    /**
+     * The channel this adapter proved on a previous session, so the hunt
+     * happens once per dongle. Returned to the transport as its first
+     * candidate; a proven channel answers immediately, an absent one is
+     * skipped without costing anything.
+     */
+    private fun rememberedChannel(mac: String): UartChannel? {
+        val ctx = appContext ?: return null
+        val raw = ctx.getSharedPreferences("tacoma", android.content.Context.MODE_PRIVATE)
+            .getString("ble_chan_$mac", null) ?: return null
+        return try {
+            val (s, w, n) = raw.split("|")
+            UartChannel(UUID.fromString(s), UUID.fromString(w), UUID.fromString(n))
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** Written only when a channel identified itself — guesses never overwrite. */
+    private fun saveChannel(mac: String, ch: UartChannel) {
+        appContext?.getSharedPreferences("tacoma", android.content.Context.MODE_PRIVATE)
+            ?.edit()
+            ?.putString("ble_chan_$mac", "${ch.service}|${ch.write}|${ch.notify}")
+            ?.apply()
     }
     /**
      * True while another screen owns the adapter. The poll loop must not
@@ -201,11 +230,19 @@ class ObdRepository(
         device: BluetoothDevice,
         onDone: (Boolean, String?) -> Unit = { _, _ -> },
     ) {
+        appContext = context.applicationContext
+        lastMac = device.address
         beginSession(
             label = device.name ?: device.address,
             transports = listOf(
                 "classic" to { SppTransport(adapter, device) as ElmTransport },
-                "ble" to { BleTransport(context.applicationContext, device) as ElmTransport },
+                "ble" to {
+                    BleTransport(
+                        context.applicationContext,
+                        device,
+                        rememberedChannel(device.address),
+                    ) as ElmTransport
+                },
             ),
             onDone = onDone,
         )
@@ -282,6 +319,7 @@ class ObdRepository(
 
             won.onLinkLost { scheduleReconnect() }
             identityOk = won.identityVerified()
+            won.confirmedBleChannel()?.let { saveChannel(lastMac, it) }
             client = won
             _state.update {
                 it.copy(

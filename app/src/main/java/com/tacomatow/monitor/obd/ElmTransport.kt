@@ -142,10 +142,23 @@ class SppTransport(
  * nothing. So we PROBE each candidate pair with a live `AT` command and keep
  * the first one that actually answers.
  */
+/**
+ * A proven BLE UART: service, write and notify. Once a channel has identified
+ * itself as an ELM327, later sessions try it first instead of re-hunting —
+ * the hunt is a one-time cost per dongle, not a per-connect tax.
+ */
+data class UartChannel(val service: UUID, val write: UUID, val notify: UUID)
+
 @SuppressLint("MissingPermission")
 class BleTransport(
     private val context: Context,
     private val device: BluetoothDevice,
+    /**
+     * The channel that proved itself on this adapter before. Tried first so a
+     * session that knows its dongle connects in a second; silently skipped if
+     * it is no longer in the GATT table, and never overwritten by a guess.
+     */
+    private val remembered: UartChannel? = null,
 ) : ElmTransport {
     companion object {
         private const val PROMPT: Byte = '>'.code.toByte()
@@ -198,6 +211,12 @@ class BleTransport(
     private var descLatch = CountDownLatch(1)
     @Volatile private var linkUp = false
     @Volatile private var subscribed = false
+
+    /** Set only when a channel identified itself as an ELM327 this session. */
+    @Volatile private var confirmed: UartChannel? = null
+
+    /** The channel this session proved, for the caller to remember — or null. */
+    fun confirmedChannel(): UartChannel? = confirmed
 
     /** True once a link was actually up, so a close we caused is not a loss. */
     @Volatile private var hadLink = false
@@ -342,6 +361,11 @@ class BleTransport(
                 note("ble: #$idx ATI -> ${ident?.take(40) ?: "<silence>"}")
                 if (looksLikeElm(ident)) {
                     stage = "ready"
+                    confirmed = UartChannel(
+                        cand.write.service.uuid,
+                        cand.write.uuid,
+                        cand.notify.uuid,
+                    )
                     note("ble: using ${cand.label}")
                     return true
                 }
@@ -402,6 +426,15 @@ class BleTransport(
             if (!canWrite(w) || !canNotify(n)) return
             if (out.none { it.write.uuid == w.uuid && it.notify.uuid == n.uuid }) {
                 out += Pair2(w, n, label)
+            }
+        }
+
+        // 0. The winner from last time. A proven channel is not a guess, so it
+        // goes before the guesses; if it is gone from the GATT table, add()
+        // skips it and the hunt proceeds exactly as before.
+        remembered?.let { r ->
+            g.getService(r.service)?.let { svc ->
+                add(svc.getCharacteristic(r.write), svc.getCharacteristic(r.notify), "remembered")
             }
         }
 

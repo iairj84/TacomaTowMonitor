@@ -101,6 +101,10 @@ class Elm327Client(
     /** True when the adapter identified itself as an ELM327-class device. */
     fun identityVerified(): Boolean = identityOk
 
+    /** The BLE channel this session proved — null on classic or when nothing was proven. */
+    fun confirmedBleChannel(): UartChannel? =
+        (transport as? BleTransport)?.confirmedChannel()
+
     /** Fires when the byte pipe drops on its own, so a session can be rebuilt. */
     fun onLinkLost(handler: () -> Unit) = transport.onLinkLost(handler)
 
