@@ -31,6 +31,13 @@ interface ElmTransport {
 
     /** Human-readable setup trail, newest last. Shown in the app for support. */
     fun transcript(): List<String>
+
+    /**
+     * Called when the link drops on its own — supervision timeout, the dongle
+     * losing power, the phone wandering out of range. Callers that can
+     * reconnect override this; a transport that never reports is fine too.
+     */
+    fun onLinkLost(handler: () -> Unit) {}
 }
 
 /** Bluetooth Classic (SPP) transport. */
@@ -192,6 +199,12 @@ class BleTransport(
     @Volatile private var linkUp = false
     @Volatile private var subscribed = false
 
+    /** True once a link was actually up, so a close we caused is not a loss. */
+    @Volatile private var hadLink = false
+    @Volatile private var linkLostHandler: (() -> Unit)? = null
+
+    override fun onLinkLost(handler: () -> Unit) { linkLostHandler = handler }
+
     override fun transcript(): List<String> = synchronized(log) { log.toList() }
 
     private fun note(s: String) = synchronized(log) { if (log.size < 60) log.add(s) }
@@ -201,8 +214,17 @@ class BleTransport(
             linkUp = newState == BluetoothProfile.STATE_CONNECTED
             note("link state=$newState status=$status")
             connLatch.countDown()
-            if (!linkUp) {
+            if (linkUp) {
+                hadLink = true
+            } else {
                 try { g.close() } catch (_: Exception) {}
+                // Only a link that WAS up can be lost. The disconnect we send
+                // ourselves during setup arrives here as state 0 as well.
+                if (hadLink) {
+                    hadLink = false
+                    note("link lost — caller may reconnect")
+                    linkLostHandler?.invoke()
+                }
             }
         }
 
@@ -519,6 +541,7 @@ class BleTransport(
         gatt = null
         writeChar = null
         linkUp = false
+        hadLink = false
         rx.clear()
     }
 }

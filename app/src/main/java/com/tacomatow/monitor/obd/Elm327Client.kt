@@ -40,9 +40,18 @@ class Elm327Client(
         open = true
         var anyAnswer = false
 
-        // Reset first, generously. BLE clones often stay silent for seconds
-        // after the notify subscription arms; retry once before giving up.
-        var reset = transport.transact("ATZ", 8_000)
+        // Break out of whatever the dongle was last doing. Any character
+        // aborts a command in progress, and a BLE ELM left mid-session — or
+        // parked in a streaming mode — answers nothing at all until it is
+        // power cycled. ATWS is that power cycle done in software: a warm
+        // start clears the command state without the owner unplugging it.
+        repeat(3) { transport.transact("", 300) }
+        val warm = transport.transact("ATWS", 4_000)
+        if (!warm.isNullOrBlank()) anyAnswer = true
+
+        // Full reset only if the warm start was refused outright. BLE clones
+        // often stay silent for seconds after the notify subscription arms.
+        var reset = if (warm.isNullOrBlank()) transport.transact("ATZ", 8_000) else warm
         if (reset.isNullOrBlank()) {
             Thread.sleep(600)
             reset = transport.transact("AT", 4_000)
@@ -80,6 +89,9 @@ class Elm327Client(
     }
 
     fun isConnected(): Boolean = open
+
+    /** Fires when the byte pipe drops on its own, so a session can be rebuilt. */
+    fun onLinkLost(handler: () -> Unit) = transport.onLinkLost(handler)
 
     /** Where setup got stuck. Shown in the error text. */
     fun transportStage(): String = when (val t = transport) {

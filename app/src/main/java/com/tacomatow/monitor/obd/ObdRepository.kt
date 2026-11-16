@@ -163,6 +163,11 @@ class ObdRepository(
     ) {
         stopPoll()
         oilMisses = 0
+        // Remembered so a dropped link can be rebuilt without the driver
+        // touching anything — including after a stop, which is when a BLE
+        // dongle is most likely to come back holding a dead session.
+        lastSession = { beginSession(label, transports, onDone) }
+        autoReconnect = true
         _state.update {
             it.copy(error = null, demoMode = false, deviceName = label, diagnostics = emptyList())
         }
@@ -220,6 +225,7 @@ class ObdRepository(
                 return@launch
             }
 
+            won.onLinkLost { scheduleReconnect() }
             client = won
             _state.update {
                 it.copy(
@@ -671,7 +677,51 @@ class ObdRepository(
         return GaugeReading(def.id, def.label, v, def.unit, status)
     }
 
+    /** Rebuilt on a dropped link; null until an adapter has been picked. */
+    private var lastSession: (() -> Unit)? = null
+    private var reconnectJob: Job? = null
+    @Volatile private var autoReconnect = false
+
+    /**
+     * The link dropped on its own: key off at the store, phone out of range,
+     * dongle browned out. Nobody should have to walk back to the OBD port for
+     * that, so the session is rebuilt in the background — the transport's warm
+     * start (ATWS) clears whatever state the dongle was left in, which is the
+     * job the unplug was doing.
+     */
+    private fun scheduleReconnect() {
+        if (!autoReconnect) return
+        if (reconnectJob?.isActive == true) return
+        val again = lastSession ?: return
+        reconnectJob = scope.launch {
+            try { client?.close() } catch (_: Exception) {}
+            client = null
+            stopPoll()
+            _state.update { it.copy(connected = false, error = "Link dropped — reconnecting…") }
+            var wait = 1_500L
+            repeat(8) {
+                delay(wait)
+                if (!autoReconnect) return@launch
+                if (client != null) return@launch
+                again()
+                var waited = 0
+                while (client == null && waited < 30_000 && autoReconnect) {
+                    delay(500)
+                    waited += 500
+                }
+                if (client != null) return@launch
+                wait = (wait * 1.5).toLong().coerceAtMost(8_000)
+            }
+            _state.update {
+                it.copy(error = "Couldn't get the adapter back on its own — tap it to retry.")
+            }
+        }
+    }
+
     fun disconnect() {
+        autoReconnect = false
+        reconnectJob?.cancel()
+        reconnectJob = null
         stopPoll()
         try { client?.close() } catch (_: Exception) {}
         client = null

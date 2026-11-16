@@ -1357,8 +1357,8 @@ private fun TransmissionWaiting(connected: Boolean) {
     }
     val (text, emphasis) = when {
         !connected -> "Not connected — choose the adapter again." to false
-        slow -> "No transmission replies. If the adapter shows connected, unplug it for " +
-            "5 seconds and reconnect — BLE dongles come back holding their last session." to true
+        slow -> "No transmission replies yet. Rebuilding the adapter session automatically — " +
+            "if it stays quiet, the dongle itself needs a power cycle (unplug it for 5 seconds)." to true
         else -> "Detecting the transmission temperature request…" to false
     }
     Text(
