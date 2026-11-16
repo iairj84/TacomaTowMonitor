@@ -166,20 +166,22 @@ writes to the vehicle.
 using whatever they already have (the factory radio's own customization menu, a
 dealer tool, or a phone app they paid for), the block is read again, and the two
 are diffed. The artefact is the owner's measurement of their own property: a
-label, an ECU address, a byte index, and the values either side. Every entry is
+plain-text note of what was changed, an ECU address, a byte index, and the values either side. Every entry is
 stamped with model year, trim and calibration so another owner can judge whether
 it applies to their truck.
 
 **What is deliberately absent.** No vendor software was decompiled, no vendor
 database was extracted, and no proprietary table is reproduced here — not in the
-source, not in the build, not in the release notes. `CustomizeCatalogue.kt` is a
-checklist of settings a Tacoma exposes, written in this project's own wording;
-it contains no block or byte data and is not a payload table.
+source, not in the build, not in the release notes. There is no built-in list
+of settings anywhere in the app: the name of a change is whatever the owner
+types, in their own wording.
 
 **For contributors.** Only first-hand observations of a vehicle you have access
 to, with the year, trim and calibration recorded. Do not paste a vendor's table,
 screenshots of a vendor's UI, or anything extracted from vendor software; those
-pull requests are declined, not cleaned up.
+pull requests are declined, not cleaned up. There is no built-in list of
+settings to pick from: the name of a change is whatever the owner types, so a
+checklist can never pass off a guess as a fact.
 
 Product and company names remain the property of their owners and are used, when
 at all, only to describe compatibility.
@@ -231,11 +233,11 @@ the difference between a diagnosis and a guess — see "The PIDs" above for why.
 **What the Customize explorer does now.** It reads C-BEST blocks, snapshots the
 answer, and diffs a later sweep against that snapshot — so changing one setting
 on the factory radio (or with any dealer tool) reveals the block, byte and bit
-that moved, plus the original value to put it back. Changes can be named from
-`app/.../obd/CustomizeCatalogue.kt` (the checklist of settings a Tacoma
-actually exposes), given a from/to value, saved as records stamped with
-year/trim/calibration, and exported as JSON. The catalogue is a checklist only:
-it says nothing about which block holds a setting — that comes from your truck.
+that moved, plus the original value to put it back. Changes are named with a
+free-text note of what was changed, given a from/to value, saved as records
+stamped with year/trim/calibration, and exported as JSON. The name comes from
+your truck and your note — the app learns the bytes from the diff, never from
+a list.
 
 **Still out of scope: customization writes.** `CustomizeActivity` reads
 C-BEST blocks and never writes. That is a design decision, not a gap waiting to

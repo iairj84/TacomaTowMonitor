@@ -28,10 +28,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.material3.Card
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -61,8 +58,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.tacomatow.monitor.obd.BlockChange
 import com.tacomatow.monitor.obd.ChangeRecord
-import com.tacomatow.monitor.obd.CatalogSetting
-import com.tacomatow.monitor.obd.CustomizeCatalogue
 import com.tacomatow.monitor.obd.CustomizeExplorer
 import com.tacomatow.monitor.obd.CustomizeKnownBlocks
 import com.tacomatow.monitor.obd.CustomizeNoise
@@ -131,8 +126,6 @@ private fun CustomizeScreen(onBack: () -> Unit) {
     var label by remember { mutableStateOf(restored?.label ?: "") }
     var valueFrom by remember { mutableStateOf("") }
     var valueTo by remember { mutableStateOf("") }
-    var picked by remember { mutableStateOf<CatalogSetting?>(null) }
-    var menuOpen by remember { mutableStateOf(false) }
     val records = remember {
         mutableStateListOf<ChangeRecord>().apply { addAll(CustomizeRecordStore.load(context)) }
     }
@@ -531,50 +524,17 @@ private fun CustomizeScreen(onBack: () -> Unit) {
 
             item {
                 Column {
-                    ExposedDropdownMenuBox(
-                        expanded = menuOpen,
-                        onExpandedChange = { menuOpen = it },
-                    ) {
-                        OutlinedTextField(
-                            value = label,
-                            onValueChange = { text ->
-                                label = text
-                                picked = null
-                                menuOpen = true
-                                syncSnapshotLabel()
-                            },
-                            label = { Text("Setting") },
-                            placeholder = { Text("Pick one, or type what you changed") },
-                            singleLine = true,
-                            trailingIcon = {
-                                ExposedDropdownMenuDefaults.TrailingIcon(expanded = menuOpen)
-                            },
-                            modifier = Modifier.menuAnchor().fillMaxWidth(),
-                        )
-                        ExposedDropdownMenu(
-                            expanded = menuOpen,
-                            onDismissRequest = { menuOpen = false },
-                        ) {
-                            val matches = CustomizeCatalogue.search(label)
-                            if (matches.isEmpty()) {
-                                DropdownMenuItem(
-                                    text = { Text("No catalogue match — the text above is used") },
-                                    onClick = { menuOpen = false },
-                                )
-                            }
-                            matches.forEach { setting ->
-                                DropdownMenuItem(
-                                    text = { Text("${setting.category} · ${setting.name}") },
-                                    onClick = {
-                                        label = setting.name
-                                        picked = setting
-                                        menuOpen = false
-                                        syncSnapshotLabel()
-                                    },
-                                )
-                            }
-                        }
-                    }
+                    OutlinedTextField(
+                        value = label,
+                        onValueChange = { text ->
+                            label = text
+                            syncSnapshotLabel()
+                        },
+                        label = { Text("What you changed") },
+                        placeholder = { Text("e.g. Auto-lock all doors") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                     Spacer(Modifier.height(8.dp))
                     Row {
                         OutlinedTextField(
@@ -593,14 +553,6 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                             placeholder = { Text("e.g. Off") },
                             singleLine = true,
                             modifier = Modifier.weight(1f),
-                        )
-                    }
-                    picked?.values?.takeIf { it.isNotEmpty() }?.let { options ->
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            "Known values: ${options.joinToString(" · ")}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     Spacer(Modifier.height(8.dp))
