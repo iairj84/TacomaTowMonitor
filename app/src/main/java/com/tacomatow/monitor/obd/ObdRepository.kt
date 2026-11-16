@@ -941,10 +941,20 @@ class ObdRepository(
 
     // ---- Tow-trip CSV logging (phone storage, user stops/starts it) ----
 
+    /** The file of the trip that just finished, for a post-drive summary. */
+    private var lastClosedLog: File? = null
+
+    /** Summary of the trip that just finished, computed off the UI thread. */
+    suspend fun readTripSummary(thresholdF: Float = 220f): TripSummary? {
+        val f = lastClosedLog ?: return null
+        return withContext(Dispatchers.IO) { TripSummaries.parse(f, thresholdF) }
+    }
+
     fun toggleLogging(): File? {
         val cur = _state.value
         if (cur.logging) {
             _state.update { it.copy(logging = false) }
+            lastClosedLog = logFile
             logFile = null
             return null
         }

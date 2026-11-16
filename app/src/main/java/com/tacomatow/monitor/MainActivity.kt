@@ -77,6 +77,8 @@ import androidx.core.content.ContextCompat
 import com.tacomatow.monitor.obd.GaugeReading
 import com.tacomatow.monitor.obd.ObdForegroundService
 import com.tacomatow.monitor.obd.ObdHolder
+import com.tacomatow.monitor.obd.TripSummaries
+import com.tacomatow.monitor.obd.TripSummary
 import com.tacomatow.monitor.obd.ObdUiState
 import com.tacomatow.monitor.ui.LocalTowPalette
 import kotlinx.coroutines.delay
@@ -146,6 +148,7 @@ class MainActivity : ComponentActivity() {
         var showPicker by remember { mutableStateOf(false) }
         var connectMsg by remember { mutableStateOf<String?>(null) }
         var report by remember { mutableStateOf<com.tacomatow.monitor.obd.AdapterReport?>(null) }
+        var tripSummary by remember { mutableStateOf<TripSummary?>(null) }
         var checking by remember { mutableStateOf(false) }
         val scope = rememberCoroutineScope()
         val lastMac = remember { prefs.getString("last_mac", null) }
@@ -332,7 +335,11 @@ class MainActivity : ComponentActivity() {
                 }
 
                 Spacer(Modifier.height(14.dp))
-                ActionRow(state)
+                ActionRow(
+                    state = state,
+                    onToggleLogging = { ObdHolder.repository.toggleLogging() != null },
+                    onTripSummary = { tripSummary = it },
+                )
 
                 state.logging.let {
                     if (it) {
@@ -343,6 +350,15 @@ class MainActivity : ComponentActivity() {
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                }
+
+                tripSummary?.let { summary ->
+                    Spacer(Modifier.height(10.dp))
+                    TripSummaryCard(
+                        summary = summary,
+                        onShare = { AdapterLogShare.share(context, summary.shareText()) },
+                        onDismiss = { tripSummary = null },
+                    )
                 }
 
                 state.error?.let {
@@ -544,7 +560,13 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun ActionRow(state: ObdUiState) {
+    private fun ActionRow(
+        state: ObdUiState,
+        /** True when logging just started, false when it just stopped. */
+        onToggleLogging: () -> Boolean,
+        onTripSummary: (TripSummary?) -> Unit,
+    ) {
+        val scope = rememberCoroutineScope()
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -560,7 +582,15 @@ class MainActivity : ComponentActivity() {
                 Text("Keep polling")
             }
             FilledTonalButton(
-                onClick = { ObdHolder.repository.toggleLogging() },
+                onClick = {
+                    if (onToggleLogging()) {
+                        onTripSummary(null)
+                    } else {
+                        scope.launch {
+                            onTripSummary(ObdHolder.repository.readTripSummary())
+                        }
+                    }
+                },
                 modifier = Modifier.weight(1f),
                 colors = if (state.logging) {
                     ButtonDefaults.filledTonalButtonColors(
@@ -1493,6 +1523,73 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+
+    @Composable
+    private fun TripSummaryCard(
+        summary: TripSummary,
+        onShare: () -> Unit,
+        onDismiss: () -> Unit,
+    ) {
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            modifier = Modifier.fillMaxWidth(),
+            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "TRIP SUMMARY",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = onDismiss) { Text("Hide") }
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "${summary.dateLabel} · ${summary.samples} samples over " +
+                        TripSummaries.fmtDur(summary.durationSec),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Spacer(Modifier.height(8.dp))
+                TripSummaryRow(
+                    "Trans pan",
+                    summary.maxPanF,
+                    summary.abovePanSec,
+                    summary.thresholdF,
+                )
+                TripSummaryRow(
+                    "Converter out",
+                    summary.maxConvF,
+                    summary.aboveConvSec,
+                    summary.thresholdF,
+                )
+                TripSummaryRow("Coolant", summary.maxCoolantF, null, summary.thresholdF)
+                Spacer(Modifier.height(10.dp))
+                Button(onClick = onShare) { Text("Share trip") }
+            }
+        }
+    }
+
+    @Composable
+    private fun TripSummaryRow(label: String, maxF: Float?, aboveSec: Long?, thresholdF: Float) {
+        Row(
+            Modifier.fillMaxWidth().padding(vertical = 2.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                label,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                (maxF?.let { "max %.0f°F".format(it) } ?: "—") +
+                    (aboveSec?.let { " · ${TripSummaries.fmtAbove(it)} above ${thresholdF.toInt()}°F" } ?: ""),
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
 
 /**
  * "Detecting…" must not be the last word for ever.
