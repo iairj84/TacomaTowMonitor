@@ -45,6 +45,7 @@ import androidx.compose.ui.platform.LocalContext
 import com.tacomatow.monitor.obd.DidProbe
 import com.tacomatow.monitor.obd.DidSweep
 import com.tacomatow.monitor.obd.DidVerdict
+import com.tacomatow.monitor.obd.DtcReport
 import com.tacomatow.monitor.obd.ObdHolder
 import com.tacomatow.monitor.ui.TacomaTheme
 import kotlinx.coroutines.launch
@@ -76,6 +77,8 @@ private fun DiagnosticsScreen(onBack: () -> Unit) {
     var reply by remember { mutableStateOf<String?>(null) }
     var identity by remember { mutableStateOf(listOf<Pair<String, String?>>()) }
     var busy by remember { mutableStateOf(false) }
+    var dtc by remember { mutableStateOf<DtcReport?>(null) }
+    var dtcBusy by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         Row(
@@ -102,6 +105,81 @@ private fun DiagnosticsScreen(onBack: () -> Unit) {
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
         ) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Trouble codes", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Reads the check-engine light plus stored (03), pending (07) and " +
+                            "permanent (0A) codes. Read-only: clearing codes writes to the " +
+                            "truck, so that button does not exist here.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    if (!state.connected) {
+                        Text(
+                            "Connect the adapter on the dashboard first.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        dtc?.let { report ->
+                            val silent = report.milOn == null &&
+                                report.confirmed.isEmpty() && report.pending.isEmpty() &&
+                                report.permanent.isEmpty()
+                            Text(
+                                when {
+                                    report.milOn == true ->
+                                        "Check-engine light is ON" +
+                                            (report.milCount?.let { " ($it stored)" } ?: "")
+                                    report.milOn == false -> "Check-engine light is off"
+                                    else -> "Light state: no reply"
+                                },
+                                style = MaterialTheme.typography.titleSmall,
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            DtcGroup("Stored", report.confirmed)
+                            DtcGroup("Pending", report.pending)
+                            DtcGroup("Permanent", report.permanent)
+                            if (silent) {
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    "No reply at all — the bus may be asleep (ignition off), or " +
+                                        "this adapter cannot reach the engine ECU.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            report.note?.let {
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    it,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Spacer(Modifier.height(10.dp))
+                        }
+                        Button(
+                            onClick = {
+                                dtcBusy = true
+                                scope.launch {
+                                    dtc = ObdHolder.repository.readTroubleCodes()
+                                    dtcBusy = false
+                                }
+                            },
+                            enabled = state.connected && !dtcBusy,
+                        ) { Text(if (dtcBusy) "Reading…" else if (dtc == null) "Read codes" else "Re-read") }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
@@ -340,6 +418,22 @@ private fun DidSweepCard() {
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun DtcGroup(label: String, codes: List<String>) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            if (codes.isEmpty()) "none" else codes.joinToString(", "),
+            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+        )
     }
 }
 

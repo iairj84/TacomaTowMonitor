@@ -630,6 +630,30 @@ class ObdRepository(
     }
 
     /**
+     * Check-engine scan: MIL state plus stored, pending and permanent codes.
+     * Takes the adapter for the few seconds this needs, then resumes polling.
+     * Read-only — there is deliberately no clear function anywhere in the app.
+     */
+    suspend fun readTroubleCodes(): DtcReport {
+        val c = client ?: return DtcReport(null, null, emptyList(), emptyList(), emptyList(), "Not connected.")
+        takeAdapter()
+        return try {
+            withContext(Dispatchers.IO) {
+                val mil = try { c.readMil() } catch (_: Exception) { null }
+                DtcReport(
+                    milOn = mil?.first,
+                    milCount = mil?.second,
+                    confirmed = try { c.readDtcs("03") } catch (_: Exception) { emptyList() },
+                    pending = try { c.readDtcs("07") } catch (_: Exception) { emptyList() },
+                    permanent = try { c.readDtcs("0A") } catch (_: Exception) { emptyList() },
+                )
+            }
+        } finally {
+            if (_state.value.connected) startPoll(c)
+        }
+    }
+
+    /**
      * Best-effort calibration identifier (mode 09 PID 04).
      *
      * Stamped on every recorded mapping so an import can be checked against

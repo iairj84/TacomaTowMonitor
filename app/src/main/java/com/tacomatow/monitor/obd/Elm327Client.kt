@@ -270,6 +270,25 @@ class Elm327Client(
         return out
     }
 
+    /**
+     * Trouble codes for one reporting mode: 03 stored, 07 pending, 0A permanent.
+     * Empty when the bus says nothing. Read-only — clearing (mode 04) has no
+     * function here on purpose.
+     */
+    fun readDtcs(mode: String, timeoutMs: Int = 5_000): List<String> {
+        if (!open) return emptyList()
+        val raw = try { readRaw(null, mode, timeoutMs) } catch (_: Exception) { null }
+        return DtcDecode.decode(mode, raw)
+    }
+
+    /** MIL on/off plus the confirmed-code count from mode 01 PID 01. */
+    fun readMil(timeoutMs: Int = 4_000): Pair<Boolean, Int>? {
+        if (!open) return null
+        val raw = try { readRaw(null, "0101", timeoutMs) } catch (_: Exception) { null }
+            ?: return null
+        return DtcDecode.mil(payloadFor("0101", raw))
+    }
+
     fun readVoltage(): Float? {
         val raw = transport.transact("ATRV", 2_000) ?: return null
         // Clone replies look like "12.6V". Be lenient.
