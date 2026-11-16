@@ -213,6 +213,18 @@ class Elm327Client(
         return r != null
     }
 
+    /**
+     * How long the ELM itself waits for an ECU before answering "NO DATA".
+     * Units are 4 ms, sent as hex. A sweep of missing blocks pays this once
+     * per probe, so shortening it is the difference between five minutes and
+     * one. Null restores the documented 200 ms default.
+     */
+    fun setResponseTimeout(ms: Int?) {
+        if (!open) return
+        val units = if (ms == null) 0x32 else (ms / 4).coerceIn(0x0A, 0xFF)
+        transport.transact("ATST" + "%02X".format(units), 2_000)
+    }
+
     /** Raw hex reply for an arbitrary header/command — used by PID detection. */
     fun readRaw(header: String?, command: String, timeoutMs: Int = 3_500): String? {
         if (!open) return null

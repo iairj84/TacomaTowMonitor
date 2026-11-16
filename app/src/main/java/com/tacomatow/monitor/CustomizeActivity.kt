@@ -26,6 +26,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -211,6 +212,14 @@ private fun CustomizeScreen(onBack: () -> Unit) {
         mutableStateOf(CustomizeKnownBlocks.load(context, currentProfile))
     }
     var lastScanFast by remember { mutableStateOf(false) }
+
+    // This screen owns the adapter while it is open. The dashboard sweep would
+    // otherwise keep firing 22/1627 reads between probes of a scan: one serial
+    // channel, two callers, so replies interleave and the scan crawls.
+    DisposableEffect(Unit) {
+        ObdHolder.repository.setPollingPaused(true)
+        onDispose { ObdHolder.repository.setPollingPaused(false) }
+    }
 
     fun runScan(fast: Boolean) {
         message = null

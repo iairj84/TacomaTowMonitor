@@ -5,6 +5,7 @@ import android.bluetooth.BluetoothDevice
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -105,6 +106,34 @@ class ObdRepository(
     fun setMonitors(ids: Set<String>) {
         enabled = ids.toSet()
     }
+    /**
+     * True while another screen owns the adapter. The poll loop must not
+     * restart behind it: one serial channel shared by two callers interleaves
+     * replies and roughly doubles every scan.
+     */
+    @Volatile private var pollingPaused = false
+
+    fun setPollingPaused(paused: Boolean) {
+        pollingPaused = paused
+        if (paused) {
+            stopPoll()
+        } else {
+            val c = client
+            val s = _state.value
+            if (s.connected && !s.demoMode && c != null && pollJob == null) startPoll(c)
+        }
+    }
+
+    /**
+     * Take sole use of the channel: cancel gauge polling and WAIT for it, so a
+     * read already in flight can't land in the middle of a sweep.
+     */
+    private suspend fun takeAdapter() {
+        val job = pollJob
+        pollJob = null
+        job?.cancelAndJoin()
+    }
+
     private var oilMisses = 0
     private var logFile: File? = null
     private var logDir: File? = null
@@ -538,7 +567,7 @@ class ObdRepository(
     /** Adapter identity, current protocol and bus voltage. */
     suspend fun adapterIdentity(): List<Pair<String, String?>> {
         val c = client ?: return emptyList()
-        pollJob?.cancel()
+        takeAdapter()
         return try {
             listOf(
                 "Adapter" to withContext(Dispatchers.IO) { try { c.readRaw(null, "ATI", 3_000) } catch (_: Exception) { null } },
@@ -559,7 +588,7 @@ class ObdRepository(
      */
     suspend fun readCalibrationId(): String? {
         val c = client ?: return null
-        pollJob?.cancel()
+        takeAdapter()
         return try {
             withContext(Dispatchers.IO) {
                 val raw = try { c.readRaw(null, "0904", 3_000) } catch (_: Exception) { null }
@@ -588,7 +617,7 @@ class ObdRepository(
         onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
     ): List<LidReading> {
         val c = client ?: return emptyList()
-        pollJob?.cancel()
+        takeAdapter()
         // known != null means a fast re-scan: only blocks that have answered
         // before, and a shorter timeout because we expect a reply. A full sweep
         // is still the only way to notice a block that has just started
@@ -602,10 +631,17 @@ class ObdRepository(
             }
         }
         val total = plan.size
-        val timeout = if (known == null) 1_200 else 800
-        val pacing = if (known == null) 70L else 40L
+        // A full sweep is 252 probes and most of them are blocks that do not
+        // exist. The expensive part was never the bus: it was waiting out the
+        // ELM's 200 ms response window on every silent block. Shorten it for
+        // the duration of the sweep and restore it afterwards.
+        val timeout = if (known == null) 900 else 700
+        val pacing = if (known == null) 40L else 25L
         val out = mutableListOf<LidReading>()
         try {
+            withContext(Dispatchers.IO) {
+                try { c.setResponseTimeout(120) } catch (_: Exception) { }
+            }
             // Try to open the extended session so body ECUs answer at all.
             withContext(Dispatchers.IO) {
                 try { c.enterExtendedSession() } catch (_: Exception) { false }
@@ -628,12 +664,16 @@ class ObdRepository(
                 delay(pacing)
             }
         } finally {
+            withContext(Dispatchers.IO) {
+                try { c.setResponseTimeout(null) } catch (_: Exception) { }
+            }
             if (_state.value.connected) startPoll(c)
         }
         return out
     }
 
     private fun startPoll(c: Elm327Client) {
+        if (pollingPaused) return
         pollJob?.cancel()
         pollJob = scope.launch {
             detectTransmission(c)
