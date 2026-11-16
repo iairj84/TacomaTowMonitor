@@ -330,7 +330,13 @@ class BleTransport(
                     confusing = cand
                 }
             }
-            val last = silent ?: confusing ?: candidates.firstOrNull()
+            // Prefer a pair that ANSWERED something over one that said nothing.
+            // '?' means the firmware received bytes and parsed them — the
+            // channel is real, the command or the state is wrong. Silence may
+            // simply be the wrong characteristic. In the field log this exact
+            // ordering picked a silent vendor channel over FFF0/F2->F1, which
+            // had answered '?'.
+            val last = confusing ?: silent ?: candidates.firstOrNull()
             if (last != null && subscribe(g, last.notify)) {
                 writeChar = last.write
                 Thread.sleep(400)
