@@ -36,8 +36,18 @@ object CustomizeExplorer {
         Target("7C6", "Smart key / certification"),
     )
 
-    /** LIDs observed in the low range on this ECU generation. */
-    val LID_RANGE: IntRange = 0x01..0x3F
+    /**
+     * Full discovery range, 0x01..0xFF on each module. The low range is
+     * where customization settings have been observed on this ECU
+     * generation, but that was an untested assumption — nothing had ever
+     * asked the upper range. Expect the upper range to hold mostly sensor
+     * and status lists (live data, not settings) with longer multi-frame
+     * replies, which also exercises gateway flow control for the first time.
+     * The sweep cost is paid once: answering blocks join the per-vehicle
+     * shortlist ([CustomizeKnownBlocks]) and everyday scans re-ask only those.
+     * Reads sweep wide; writes stay narrow — see WritePolicy.ALLOWED_LIDS.
+     */
+    val LID_RANGE: IntRange = 0x01..0xFF
 
     val totalProbes: Int get() = TARGETS.size * LID_RANGE.count()
 

@@ -752,10 +752,12 @@ class ObdRepository(
             }
         }
         val total = plan.size
-        // A full sweep is 252 probes and most of them are blocks that do not
-        // exist. The expensive part was never the bus: it was waiting out the
-        // ELM's 200 ms response window on every silent block. Shorten it for
-        // the duration of the sweep and restore it afterwards.
+        // A full sweep is 1,020 probes and most of them are blocks that do
+        // not exist. The expensive part was never the bus: it was waiting
+        // out the ELM's response window on every silent block (refusals come
+        // back immediately and go faster). Paid once per truck: answers join
+        // the shortlist and routine re-scans re-ask only those. Shorten the
+        // response timeout for the duration of the sweep and restore it after.
         val timeout = if (known == null) 900 else 700
         val pacing = if (known == null) 40L else 25L
         val out = mutableListOf<LidReading>()

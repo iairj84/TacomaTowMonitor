@@ -102,7 +102,12 @@ object WritePolicy {
     /** Main Body behind that gateway. The only sub-target a write may name. */
     const val MAIN_BODY_SUB = 0x40
 
-    /** Customization local identifiers observed on this ECU generation. */
+    /**
+     * Customization local identifiers observed on this ECU generation.
+     * Deliberately narrower than the read sweep (0x01..0xFF): widen what is
+     * read, and widen what can be written only once a specific upper-range
+     * block is verified as a stored settings block rather than live data.
+     */
     val ALLOWED_LIDS = 0x01..0x3F
 
     const val MIN_VOLTS = 12.0f

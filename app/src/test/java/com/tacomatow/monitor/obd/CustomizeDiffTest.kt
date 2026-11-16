@@ -156,6 +156,14 @@ class CustomizeDiffTest {
     }
 
     @Test
+    fun `discovery sweeps the full LID range`() {
+        // The low range was an untested assumption; one wide sweep pays the
+        // cost once and the shortlist absorbs the answers.
+        assertEquals(0x01..0xFF, CustomizeExplorer.LID_RANGE)
+        assertEquals(4 * 255, CustomizeExplorer.totalProbes)
+    }
+
+    @Test
     fun `two runs are the minimum for learning noise`() {
         val one = listOf(listOf(reading("750", "Main body ECU", 0x14, "65")))
         assertTrue(CustomizeNoise.volatileAcross(one).isEmpty())

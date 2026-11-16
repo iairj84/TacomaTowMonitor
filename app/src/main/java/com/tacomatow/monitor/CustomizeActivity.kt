@@ -420,8 +420,9 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                             !state.connected -> "Not connected"
                             scanning -> "$done / $total"
                             knownBlocks.isEmpty() ->
-                                "Scan once to learn which blocks this truck answers, then re-scans " +
-                                    "only ask those."
+                                "Full scan asks 0x01–0xFF on each module (about 1,020 probes, " +
+                                    "a few minutes parked) and learns which blocks this truck " +
+                                    "answers — then re-scans only ask those."
                             else -> {
                                 val n = knownBlocks.values.sumOf { it.size }
                                 "$n blocks have answered on this truck — Re-scan known reads only those."

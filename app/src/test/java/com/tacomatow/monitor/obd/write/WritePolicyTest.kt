@@ -62,6 +62,14 @@ class WritePolicyTest {
     }
 
     @Test
+    fun `upper-range LIDs are read-only until verified as settings blocks`() {
+        // The read sweep covers 0x01..0xFF; writes stay at 0x01..0x3F until
+        // a specific upper-range block is verified as stored settings.
+        assertEquals(RefusalRule.UNRECOGNISED_TARGET, rule(bodyWrite.copy(lid = 0x80)))
+        assertEquals(RefusalRule.UNRECOGNISED_TARGET, rule(bodyWrite.copy(lid = 0xFF)))
+    }
+
+    @Test
     fun `lowercase header is accepted`() {
         assertEquals(WriteDecision.Allow, WritePolicy.evaluate(bodyWrite.copy(header = "0x750"), WriteConditions()))
     }
