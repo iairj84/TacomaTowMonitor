@@ -49,6 +49,12 @@ data class ObdUiState(
      * than silently leaving an empty gauge card.
      */
     val refusals: List<String> = emptyList(),
+    /**
+     * Connected to the adapter, but nothing on the powertrain bus answered.
+     * The adapter runs off the battery, so it links long before the key is on;
+     * blank gauges here mean the truck is asleep, not that the app is broken.
+     */
+    val powertrainAsleep: Boolean = false,
 )
 
 /**
@@ -92,6 +98,9 @@ class ObdRepository(
      * time on what matters.
      */
     @Volatile private var enabled: Set<String> = setOf("coolant", "oil", "rpm", "speed", "voltage")
+
+    /** True once a real transmission candidate answered this session. */
+    @Volatile private var transDetected = false
 
     fun setMonitors(ids: Set<String>) {
         enabled = ids.toSet()
@@ -143,6 +152,7 @@ class ObdRepository(
             it.copy(
                 readings = all.filterKeys { k -> k == "trans_pan" || k == "trans_conv" || e.contains(k) },
                 voltage = if (e.contains("voltage")) 13.8f else null,
+                powertrainAsleep = false,
                 lastUpdateMs = System.currentTimeMillis(),
             )
         }
@@ -292,6 +302,7 @@ class ObdRepository(
 
     private suspend fun detectTransmission(c: Elm327Client) {
         detectLog.clear()
+        transDetected = false
         panDef = TacomaPids.TRANS_PAN
         convDef = TacomaPids.TRANS_CONVERTER
         detectLog.add("protocol: ATSP${c.activeProtocol()}")
@@ -303,6 +314,7 @@ class ObdRepository(
             )
             if (foundPan != null) {
                 panDef = foundPan
+                transDetected = true
                 probeTransCandidate(
                     c, TacomaPids.CONVERTER_CANDIDATES.first(), "trans_conv", "T-Conv Out", 230f, 250f,
                 )?.let { convDef = it }
@@ -398,7 +410,35 @@ class ObdRepository(
             }
             delay(120)
         }
+        transDetected = panFound
         _state.update { it.copy(diagnostics = it.diagnostics + detectLog) }
+    }
+
+    /**
+     * Cheap re-probe for the transmission DIDs.
+     *
+     * The adapter is powered from the OBD connector, so a session can open
+     * while the truck's computers are still asleep — connect at launch with the
+     * key off and the first sweep finds nothing. Detection used to run exactly
+     * once, so the gauges stayed blank for the whole drive even after the key
+     * went on. Two probes, retried occasionally, is the whole fix.
+     */
+    private suspend fun redetectTransmission(c: Elm327Client) {
+        val pan = probeTransCandidate(
+            c, TacomaPids.TRANS_CANDIDATES.first(), "trans_pan", "Trans Pan", 220f, 240f,
+        ) ?: return
+        panDef = pan
+        transDetected = true
+        probeTransCandidate(
+            c, TacomaPids.CONVERTER_CANDIDATES.first(), "trans_conv", "T-Conv Out", 230f, 250f,
+        )?.let { convDef = it }
+        _state.update {
+            it.copy(
+                diagnostics = it.diagnostics +
+                    "late detect: truck woke up, transmission PIDs active",
+                powertrainAsleep = false,
+            )
+        }
     }
 
     /**
@@ -607,7 +647,17 @@ class ObdRepository(
             // ones that do work (speed and coolant went blank because of it).
             val parkedUntil = mutableMapOf<String, Long>()
             val refusalMap = mutableMapOf<String, String>()
+            var lastRedetect = System.currentTimeMillis()
+            var asleepNoted = false
             while (isActive && c.isConnected()) {
+                // Nothing on the powertrain bus? The truck is probably asleep,
+                // which is what a session opened before the key went on looks
+                // like. Keep asking, politely, so starting the truck recovers
+                // on its own.
+                if (!transDetected && System.currentTimeMillis() - lastRedetect > 25_000) {
+                    lastRedetect = System.currentTimeMillis()
+                    try { redetectTransmission(c) } catch (_: Exception) {}
+                }
                 val out = mutableMapOf<String, GaugeReading>()
                 // Transmission definitions are whatever detection found. The
                 // extras follow the driver's Settings; trans always polls.
@@ -658,12 +708,24 @@ class ObdRepository(
                 val volts = if (enabledNow.contains("voltage")) withContext(Dispatchers.IO) {
                     try { c.readVoltage() } catch (_: Exception) { null }
                 } else null
+                val anyPower = out.values.any { it.valueF != null }
+                if (!transDetected && !anyPower && !asleepNoted) {
+                    asleepNoted = true
+                    _state.update { s ->
+                        s.copy(
+                            diagnostics = s.diagnostics +
+                                "bus: no reply on any powertrain address — ignition off or ECUs asleep",
+                        )
+                    }
+                }
+                if (anyPower) asleepNoted = false
                 _state.update {
                     it.copy(
                         readings = out,
                         voltage = volts,
                         lastUpdateMs = System.currentTimeMillis(),
                         refusals = refusalMap.values.toList(),
+                        powertrainAsleep = !transDetected && !anyPower,
                     )
                 }
                 appendLog(out, volts)

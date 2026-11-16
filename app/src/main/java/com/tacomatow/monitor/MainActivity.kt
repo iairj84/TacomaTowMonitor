@@ -914,7 +914,7 @@ class MainActivity : ComponentActivity() {
         val pan = state.readings["trans_pan"]
         val conv = state.readings["trans_conv"]
         if (pan == null && conv == null) {
-            TransmissionWaiting(connected = state.connected)
+            TransmissionWaiting(connected = state.connected, asleep = state.powertrainAsleep)
             return
         }
 
@@ -1463,13 +1463,18 @@ class MainActivity : ComponentActivity() {
  * after a few seconds say what to do about it.
  */
 @Composable
-private fun TransmissionWaiting(connected: Boolean) {
+private fun TransmissionWaiting(connected: Boolean, asleep: Boolean) {
     var slow by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         delay(12_000)
         slow = true
     }
     val (text, emphasis) = when {
+        // The adapter links off the battery long before the key is on, so
+        // "connected" says nothing about the truck being awake.
+        asleep -> "The adapter is connected, but nothing on the engine bus is answering. " +
+            "Turn the ignition to RUN — at ACC the powertrain computers stay asleep. " +
+            "The app keeps asking and picks the gauges up when they wake." to true
         !connected -> "Not connected — choose the adapter again." to false
         slow -> "No transmission replies yet. Rebuilding the adapter session automatically — " +
             "if it stays quiet, the dongle itself needs a power cycle (unplug it for 5 seconds)." to true
