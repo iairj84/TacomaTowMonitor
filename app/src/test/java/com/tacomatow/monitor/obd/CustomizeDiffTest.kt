@@ -170,6 +170,39 @@ class CustomizeDiffTest {
     }
 
     @Test
+    fun `blocks the baseline never probed are not reported as gained`() {
+        // A baseline from a narrower sweep must not claim its missing upper
+        // blocks "answered only after the change".
+        val before = listOf(reading("750", "Main body ECU", 0x14, "65"))
+        val after = listOf(
+            reading("750", "Main body ECU", 0x14, "65"),
+            reading("750", "Main body ECU", 0xA4, "00"),
+        )
+        val diff = CustomizeExplorer.diff(before, after)
+        assertTrue(diff.gained.isEmpty())
+        assertEquals(1, diff.unbaselined)
+        assertTrue(
+            CustomizeExplorer.describe(diff, "before", "after")
+                .contains("never probed in the baseline"),
+        )
+    }
+
+    @Test
+    fun `a block that was asked and silent then answers is a real gain`() {
+        val before = listOf(
+            reading("750", "Main body ECU", 0x14, "65"),
+            LidReading("750", "Main body ECU", 0xA4, raw = "NO DATA", payloadHex = null),
+        )
+        val after = listOf(
+            reading("750", "Main body ECU", 0x14, "65"),
+            reading("750", "Main body ECU", 0xA4, "00"),
+        )
+        val diff = CustomizeExplorer.diff(before, after)
+        assertEquals(1, diff.gained.size)
+        assertEquals(0, diff.unbaselined)
+    }
+
+    @Test
     fun `survey lists header lid length and payload`() {
         val text = CustomizeExplorer.describeSurvey(
             listOf(

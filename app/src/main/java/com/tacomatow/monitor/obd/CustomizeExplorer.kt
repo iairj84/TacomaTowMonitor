@@ -189,15 +189,23 @@ object CustomizeExplorer {
             }
         }
 
+        // Every probe leaves a reading, supported or not, so a key in
+        // [before] was actually asked. A block absent from the baseline was
+        // never probed at all — typically because the baseline predates a
+        // wider LID range — and calling that "answered only after the change"
+        // invents a result for a question nobody asked.
+        val askedBefore = before.map(::key).toSet()
+        val newKeys = afterMap.keys - beforeMap.keys
         return SnapshotDiff(
             changes = changes,
-            gained = (afterMap.keys - beforeMap.keys).sortedWith(order).map(afterMap::getValue),
+            gained = newKeys.filter { it in askedBefore }.sortedWith(order).map(afterMap::getValue),
             lost = (beforeMap.keys - afterMap.keys)
                 .filter { probedKeys == null || it in probedKeys }
                 .sortedWith(order)
                 .map(beforeMap::getValue),
             compared = shared.size,
             noise = noise,
+            unbaselined = newKeys.count { it !in askedBefore },
         )
     }
 
@@ -237,6 +245,13 @@ object CustomizeExplorer {
             diff.noise.forEach {
                 sb.appendLine("  0x%02X %s (%s): %s".format(it.lid, it.ecuLabel, it.header, it.byteChanges.joinToString(", ") { b -> b.describe() }))
             }
+        }
+        if (diff.unbaselined > 0) {
+            sb.appendLine(
+                "${diff.unbaselined} answering block(s) were never probed in the baseline " +
+                    "(it covers fewer blocks) — save a fresh snapshot so they can be compared.",
+            )
+            sb.appendLine()
         }
         if (diff.gained.isNotEmpty()) {
             sb.appendLine("answered only after the change:")
@@ -332,6 +347,13 @@ data class SnapshotDiff(
     val compared: Int,
     /** Blocks that moved but are known to move on their own. */
     val noise: List<BlockChange> = emptyList(),
+    /**
+     * Answering blocks the baseline never probed. Not a change and not a
+     * gain: the two scans asked different questions, which happens when the
+     * baseline predates a wider sweep. Reported so a stale baseline is
+     * visible instead of silently shrinking the comparison.
+     */
+    val unbaselined: Int = 0,
 ) {
     val identical: Boolean get() = changes.isEmpty() && gained.isEmpty() && lost.isEmpty()
 

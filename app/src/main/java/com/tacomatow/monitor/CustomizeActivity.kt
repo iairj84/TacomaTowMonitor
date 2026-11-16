@@ -1013,6 +1013,16 @@ private fun DiffCard(
                 )
             }
 
+            if (diff.unbaselined > 0) {
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "${diff.unbaselined} answering blocks were never probed in the baseline — " +
+                        "it covers fewer blocks than this scan. Save a fresh snapshot so they " +
+                        "can be compared.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             if (diff.gained.isNotEmpty()) {
                 Spacer(Modifier.height(10.dp))
                 Text(
