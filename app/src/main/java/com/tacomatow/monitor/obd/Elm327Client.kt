@@ -30,6 +30,7 @@ class Elm327Client(
         private const val UNKNOWN_HEADER = "\u0000"
     }
     @Volatile private var transportOpened = false
+    @Volatile private var identityOk = false
 
     /** False means we never even got a byte pipe — very different from a silent dongle. */
     fun didOpenTransport(): Boolean = transportOpened
@@ -77,6 +78,13 @@ class Elm327Client(
 
         // Prove we can actually talk to the car, not just to the adapter.
         val ident = transport.transact("ATI", 3_000)
+        // A channel that answers with bytes which are not ELM text can produce
+        // replies that look like an ECU refusing an identifier. Until the
+        // adapter names itself, no such reply can be trusted as evidence about
+        // the truck, so it is recorded as unverified instead of reported.
+        identityOk = ident?.uppercase()?.let {
+            it.contains("ELM") || it.contains("STN") || it.contains("OBD")
+        } == true
         if (!ident.isNullOrBlank()) anyAnswer = true
         val probe = transport.transact("0100", 4_000)
         if (!probe.isNullOrBlank()) anyAnswer = true
@@ -89,6 +97,9 @@ class Elm327Client(
     }
 
     fun isConnected(): Boolean = open
+
+    /** True when the adapter identified itself as an ELM327-class device. */
+    fun identityVerified(): Boolean = identityOk
 
     /** Fires when the byte pipe drops on its own, so a session can be rebuilt. */
     fun onLinkLost(handler: () -> Unit) = transport.onLinkLost(handler)

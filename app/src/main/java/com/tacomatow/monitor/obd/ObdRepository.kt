@@ -71,6 +71,8 @@ class ObdRepository(
     val state: StateFlow<ObdUiState> = _state.asStateFlow()
 
     private var client: Elm327Client? = null
+    /** Set at connect: the adapter named itself as an ELM327-class device. */
+    @Volatile private var identityOk = true
     private var pollJob: Job? = null
     /** Detected transmission definitions — replaced at connect time. */
     private var panDef: PidDef = TacomaPids.TRANS_PAN
@@ -279,6 +281,7 @@ class ObdRepository(
             }
 
             won.onLinkLost { scheduleReconnect() }
+            identityOk = won.identityVerified()
             client = won
             _state.update {
                 it.copy(
@@ -718,13 +721,23 @@ class ObdRepository(
                     }
                     val v = attempt.value
                     attempt.refusal?.let { neg ->
-                        val label = if (def.id == "trans_pan") "Trans Pan"
-                        else if (def.id == "trans_conv") "T-Conv Out"
-                        else def.label
-                        refusalMap[def.id] = "$label — $neg"
-                        // A refusal is a property of the calibration: it will
-                        // not change on the next sweep, so stop spending time on it.
-                        parkedUntil[def.id] = now0 + 600_000
+                        if (!identityOk) {
+                            // The adapter never said it was an ELM327, so these
+                            // frames are not evidence about the truck. Back off
+                            // like a miss, but never tell the driver the ECU
+                            // refused anything.
+                            val n = (misses[def.id] ?: 0) + 1
+                            misses[def.id] = n
+                            if (n >= 2) parkedUntil[def.id] = now0 + 120_000
+                        } else {
+                            val label = if (def.id == "trans_pan") "Trans Pan"
+                            else if (def.id == "trans_conv") "T-Conv Out"
+                            else def.label
+                            refusalMap[def.id] = "$label — $neg"
+                            // A refusal is a property of the calibration: it will
+                            // not change on the next sweep, so stop spending time on it.
+                            parkedUntil[def.id] = now0 + 600_000
+                        }
                     }
                     if (v == null && attempt.definitiveMiss) {
                         val n = (misses[def.id] ?: 0) + 1

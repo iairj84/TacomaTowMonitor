@@ -302,19 +302,23 @@ class BleTransport(
                 close()
                 return false
             }
-            // A single characteristic that both writes and notifies is the
-            // usual wiring for these clones; cross-pairs are a guess and one
-            // of them (fff2 -> fff1) answers AT commands with "?", which then
-            // fails every OBD request. Try the natural shape first.
+            // collectCandidates already orders these deliberately: known ELM327
+            // shapes first, guesses last. Re-sorting by "same characteristic"
+            // put the documented FFF0 cross pair behind vendor guesses, which is
+            // exactly backwards for the common Veepeak-class dongle.
             val candidates = collectCandidates(g)
-                .sortedBy { if (it.write.uuid == it.notify.uuid) 0 else 1 }
             note("ble: ${candidates.size} candidate UART pair(s)")
             if (candidates.isEmpty()) {
                 stage = "no-uart-characteristic"
                 close()
                 return false
             }
-            // Probe each pair with a real AT command; keep the first that replies.
+            // Ask each pair for its identity. "Any reply" is not a usable
+            // test: a half-duplex echo channel or a vendor data channel answers
+            // too — with framed bytes, not ELM text — and then fails every OBD
+            // request in a way that looks like the truck refusing identifiers.
+            // That is worse than silence, because the app then tells the driver
+            // the ECU refused this PID and no adapter will help.
             stage = "probing-uart"
             var silent: Pair2? = null
             var confusing: Pair2? = null
@@ -328,46 +332,38 @@ class BleTransport(
                 // Cheap clones need most of a second after the notify
                 // subscription arms, and longer on a re-connect.
                 Thread.sleep(700)
-                var probe = transact("AT", 2_500)?.trim()
-                // Silence here proves nothing yet; and a clone that has just
-                // woken up answers '?' to the first command it sees.
+                var ident = transact("ATI", 3_000)?.trim()
                 repeat(3) {
-                    if (probe.isNullOrEmpty() || probe == "?") {
+                    if (!looksLikeElm(ident)) {
                         Thread.sleep(700)
-                        probe = transact("AT", 2_500)?.trim()
+                        ident = transact("ATI", 3_000)?.trim()
                     }
                 }
-                note("ble: #$idx probe -> ${probe?.take(40) ?: "<silence>"}")
-                if (probe != null && probe.isNotEmpty() && probe != "?") {
+                note("ble: #$idx ATI -> ${ident?.take(40) ?: "<silence>"}")
+                if (looksLikeElm(ident)) {
                     stage = "ready"
                     note("ble: using ${cand.label}")
                     return true
                 }
-                // Rank the losers but never walk away: attaching to a doubtful
-                // channel beats refusing to connect, because the session that
-                // follows is what actually diagnoses the dongle.
-                if (probe.isNullOrEmpty()) {
+                // Rank the losers, but never walk away from the whole device:
+                // a doubtful channel still beats refusing to connect, because
+                // the session that follows is what diagnoses the dongle.
+                if (ident.isNullOrEmpty()) {
                     if (silent == null) silent = cand
                 } else if (confusing == null) {
                     confusing = cand
                 }
             }
-            // Prefer a pair that ANSWERED something over one that said nothing.
-            // '?' means the firmware received bytes and parsed them — the
-            // channel is real, the command or the state is wrong. Silence may
-            // simply be the wrong characteristic. In the field log this exact
-            // ordering picked a silent vendor channel over FFF0/F2->F1, which
-            // had answered '?'.
-            val last = confusing ?: silent ?: candidates.firstOrNull()
+            // Silence is inert; a channel that answers with bytes that are not
+            // ELM text actively corrupts every reading, so the quiet one is the
+            // better guess when nothing identified itself.
+            val last = silent ?: confusing ?: candidates.firstOrNull()
             if (last != null && subscribe(g, last.notify)) {
                 writeChar = last.write
                 Thread.sleep(400)
-                stage = "connected-but-silent"
-                note("ble: using ${last.label} (no clean probe — best of a bad set)")
-                // Answering nothing at all is a different failure from the
-                // truck refusing; say so, because the fix is to power-cycle
-                // the dongle rather than to buy another one.
-                note("ble: connected, but the adapter answered no AT command. Unplug it for 5 s and retry.")
+                stage = "unverified-channel"
+                note("ble: using ${last.label} — no channel identified as ELM327")
+                note("ble: readings may be wrong; if data looks strange, retry or power-cycle the dongle")
                 return true
             }
             stage = "no-answer-on-probe"
@@ -379,6 +375,17 @@ class BleTransport(
             close()
             false
         }
+    }
+
+    /**
+     * A real ELM327 answers ATI with "ELM327 v1.x"; STN-based clones answer
+     * "STN1110"; some OEM-licensed ones print "OBD...". Anything else — echoed
+     * bytes, framed CAN, a bare '?' — is not a command channel, whatever else
+     * it does.
+     */
+    private fun looksLikeElm(reply: String?): Boolean {
+        val s = reply?.uppercase() ?: return false
+        return s.contains("ELM") || s.contains("STN") || s.contains("OBD")
     }
 
     /**
