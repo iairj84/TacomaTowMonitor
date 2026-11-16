@@ -77,6 +77,7 @@ import com.tacomatow.monitor.obd.ObdForegroundService
 import com.tacomatow.monitor.obd.ObdHolder
 import com.tacomatow.monitor.obd.ObdUiState
 import com.tacomatow.monitor.ui.LocalTowPalette
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.tacomatow.monitor.ui.TacomaTheme
 import java.io.File
@@ -867,11 +868,7 @@ class MainActivity : ComponentActivity() {
         val pan = state.readings["trans_pan"]
         val conv = state.readings["trans_conv"]
         if (pan == null && conv == null) {
-            Text(
-                "Detecting the transmission temperature request…",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            TransmissionWaiting(connected = state.connected)
             return
         }
 
@@ -1343,3 +1340,31 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+
+/**
+ * "Detecting…" must not be the last word for ever.
+ *
+ * A BLE dongle that was connected a minute ago can hand back a link that
+ * accepts writes and never answers — indistinguishable from a slow scan — so
+ * after a few seconds say what to do about it.
+ */
+@Composable
+private fun TransmissionWaiting(connected: Boolean) {
+    var slow by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        delay(12_000)
+        slow = true
+    }
+    val (text, emphasis) = when {
+        !connected -> "Not connected — choose the adapter again." to false
+        slow -> "No transmission replies. If the adapter shows connected, unplug it for " +
+            "5 seconds and reconnect — BLE dongles come back holding their last session." to true
+        else -> "Detecting the transmission temperature request…" to false
+    }
+    Text(
+        text,
+        style = MaterialTheme.typography.bodyMedium,
+        color = if (emphasis) MaterialTheme.colorScheme.primary
+        else MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}

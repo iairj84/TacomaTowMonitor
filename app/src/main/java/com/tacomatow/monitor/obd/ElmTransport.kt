@@ -148,6 +148,26 @@ class BleTransport(
         val FFE_SERVICE: UUID = UUID.fromString("0000FFE0-0000-1000-8000-00805F9B34FB")
         val FFE_CHAR: UUID = UUID.fromString("0000FFE1-0000-1000-8000-00805F9B34FB")
         val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805F9B34FB")
+
+        /**
+         * The generic ELM327 BLE shape: service FFF0, write FFF2, notify FFF1.
+         * This is what a Veepeak-class adapter exposes, and it is a CROSS pair —
+         * so it has to be tried before the "one characteristic does both"
+         * ordering below, which otherwise ranks it last.
+         */
+        val FFF_SERVICE: UUID = UUID.fromString("0000FFF0-0000-1000-8000-00805F9B34FB")
+        val FFF_WRITE: UUID = UUID.fromString("0000FFF2-0000-1000-8000-00805F9B34FB")
+        val FFF_NOTIFY: UUID = UUID.fromString("0000FFF1-0000-1000-8000-00805F9B34FB")
+
+        /** GATT housekeeping services: never a UART, and they cost probe time. */
+        private val NOT_UART_SERVICES = setOf(
+            "00001800-0000-1000-8000-00805F9B34FB", // generic access
+            "00001801-0000-1000-8000-00805F9B34FB", // generic attribute
+            "00001802-0000-1000-8000-00805F9B34FB", // immediate alert
+            "0000180A-0000-1000-8000-00805F9B34FB", // device information
+            "0000180F-0000-1000-8000-00805F9B34FB", // battery
+            "00001812-0000-1000-8000-00805F9B34FB", // HID
+        )
     }
 
     private data class Pair2(
@@ -211,9 +231,25 @@ class BleTransport(
         }
     }
 
+    /**
+     * One attempt, plus one retry on a fresh connection.
+     *
+     * A BLE dongle that was connected moments ago can hand back a GATT link
+     * that accepts writes and never answers — it looks connected and behaves
+     * dead. The application-level fix is to tear the connection down and build
+     * it again, which is exactly what a power cycle would do.
+     */
     override fun open(): Boolean {
+        if (openOnce(clearLog = true)) return true
+        note("ble: retrying on a fresh connection")
         close()
-        log.clear()
+        try { Thread.sleep(1_200) } catch (_: Exception) {}
+        return openOnce(clearLog = false)
+    }
+
+    private fun openOnce(clearLog: Boolean): Boolean {
+        close()
+        if (clearLog) log.clear()
         connLatch = CountDownLatch(1)
         svcLatch = CountDownLatch(1)
         return try {
@@ -267,13 +303,15 @@ class BleTransport(
                     continue
                 }
                 writeChar = cand.write
-                Thread.sleep(500)
+                // Cheap clones need most of a second after the notify
+                // subscription arms, and longer on a re-connect.
+                Thread.sleep(700)
                 var probe = transact("AT", 2_500)?.trim()
-                // A cheap clone is still waking up for a second after the
-                // notify subscription arms; silence here proves nothing yet.
-                repeat(2) {
-                    if (probe.isNullOrEmpty()) {
-                        Thread.sleep(600)
+                // Silence here proves nothing yet; and a clone that has just
+                // woken up answers '?' to the first command it sees.
+                repeat(3) {
+                    if (probe.isNullOrEmpty() || probe == "?") {
+                        Thread.sleep(700)
                         probe = transact("AT", 2_500)?.trim()
                     }
                 }
@@ -296,8 +334,12 @@ class BleTransport(
             if (last != null && subscribe(g, last.notify)) {
                 writeChar = last.write
                 Thread.sleep(400)
-                stage = "ready"
+                stage = "connected-but-silent"
                 note("ble: using ${last.label} (no clean probe — best of a bad set)")
+                // Answering nothing at all is a different failure from the
+                // truck refusing; say so, because the fix is to power-cycle
+                // the dongle rather than to buy another one.
+                note("ble: connected, but the adapter answered no AT command. Unplug it for 5 s and retry.")
                 return true
             }
             stage = "no-answer-on-probe"
@@ -311,31 +353,63 @@ class BleTransport(
         }
     }
 
-    /** Ordered candidates: NUS, FFE0, then any write+notify pair in any service. */
+    /**
+     * Ordered candidates. Known-good shapes first, generic guesses last.
+     *
+     * The order matters more than the probe does: on a re-connect the correct
+     * pair answers on the first attempt, while a wrong pair answers `?` or
+     * nothing and burns seconds apiece.
+     */
     private fun collectCandidates(g: BluetoothGatt): List<Pair2> {
         val out = mutableListOf<Pair2>()
+        fun add(w: BluetoothGattCharacteristic?, n: BluetoothGattCharacteristic?, label: String) {
+            if (w == null || n == null) return
+            if (!canWrite(w) || !canNotify(n)) return
+            if (out.none { it.write.uuid == w.uuid && it.notify.uuid == n.uuid }) {
+                out += Pair2(w, n, label)
+            }
+        }
+
+        // 1. Nordic UART.
         g.getService(NUS_SERVICE)?.let { svc ->
-            val tx = svc.getCharacteristic(NUS_TX)
-            val rxChar = svc.getCharacteristic(NUS_RX)
-            if (tx != null && rxChar != null && canWrite(tx) && canNotify(rxChar)) {
-                out += Pair2(tx, rxChar, "NUS (6E400001)")
-            }
+            add(svc.getCharacteristic(NUS_TX), svc.getCharacteristic(NUS_RX), "NUS (6E400001)")
         }
+
+        // 2. Generic ELM327 BLE: FFF0 with write FFF2 and notify FFF1.
+        g.getService(FFF_SERVICE)?.let { svc ->
+            add(svc.getCharacteristic(FFF_WRITE), svc.getCharacteristic(FFF_NOTIFY), "FFF0/F2->F1")
+            val both = svc.getCharacteristic(FFF_NOTIFY)
+            add(both, both, "FFF1 both")
+        }
+
+        // 3. HM-10 style single characteristic.
         g.getService(FFE_SERVICE)?.let { svc ->
-            svc.getCharacteristic(FFE_CHAR)?.let { ch ->
-                if (canWrite(ch) && canNotify(ch)) out += Pair2(ch, ch, "FFE1 (HM-10)")
+            val ch = svc.getCharacteristic(FFE_CHAR)
+            add(ch, ch, "FFE1 (HM-10)")
+        }
+
+        // 4. Anything else that looks like a UART, one characteristic first.
+        val uartServices = g.services.filter { it.uuid.toString().uppercase() !in NOT_UART_SERVICES }
+        for (svc in uartServices) {
+            val candidates = svc.characteristics.filter { it.uuid != CCCD }
+            for (ch in candidates) {
+                if (canWrite(ch) && canNotify(ch)) {
+                    add(ch, ch, "${svc.uuid.toString().take(8)} both ${ch.uuid.toString().take(8)}")
+                }
             }
         }
-        for (svc in g.services) {
-            val writes = svc.characteristics.filter { canWrite(it) }
-            val notifies = svc.characteristics.filter { canNotify(it) }
-            for (w in writes) {
-                for (n in notifies) {
-                    // Characteristic shape varies wildly; try same-char, then cross.
-                    val label = "${svc.uuid.toString().take(8)} w=${w.uuid.toString().take(8)} n=${n.uuid.toString().take(8)}"
-                    if (out.none { it.write.uuid == w.uuid && it.notify.uuid == n.uuid }) {
-                        out += Pair2(w, n, label)
-                    }
+        // 5. Then cross pairs. A CCCD exposed as a characteristic is a clone
+        //    quirk seen in the field; subscribing to it never delivers data.
+        for (svc in uartServices) {
+            val chars = svc.characteristics.filter { it.uuid != CCCD }
+            for (w in chars.filter { canWrite(it) }) {
+                for (n in chars.filter { canNotify(it) }) {
+                    add(
+                        w,
+                        n,
+                        "${svc.uuid.toString().take(8)} w=${w.uuid.toString().take(8)} " +
+                            "n=${n.uuid.toString().take(8)}",
+                    )
                 }
             }
         }
