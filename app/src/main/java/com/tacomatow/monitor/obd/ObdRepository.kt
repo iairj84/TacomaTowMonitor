@@ -130,6 +130,15 @@ class ObdRepository(
         }
     }
 
+    /** The stored channel for an adapter, if any — for display and forgetting. */
+    fun rememberedChannelFor(mac: String): UartChannel? = rememberedChannel(mac)
+
+    /** Drop the stored channel so the next session hunts from scratch. */
+    fun forgetChannel(mac: String) {
+        appContext?.getSharedPreferences("tacoma", android.content.Context.MODE_PRIVATE)
+            ?.edit()?.remove("ble_chan_$mac")?.apply()
+    }
+
     /** Written only when a channel identified itself — guesses never overwrite. */
     private fun saveChannel(mac: String, ch: UartChannel) {
         appContext?.getSharedPreferences("tacoma", android.content.Context.MODE_PRIVATE)

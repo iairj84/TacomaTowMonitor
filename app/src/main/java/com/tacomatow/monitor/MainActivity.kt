@@ -154,6 +154,8 @@ class MainActivity : ComponentActivity() {
         LaunchedEffect(gentle) { ObdHolder.repository.setGentle(gentle) }
         var showSettings by remember { mutableStateOf(false) }
         var checkRan by remember { mutableStateOf(prefs.getBoolean("check_ran", false)) }
+        // Refreshed each time Settings opens, so it always reflects storage.
+        var rememberedCh by remember { mutableStateOf<String?>(null) }
         var checkHidden by remember { mutableStateOf(prefs.getBoolean("check_hidden", false)) }
         var monitors by remember {
             mutableStateOf(
@@ -211,7 +213,14 @@ class MainActivity : ComponentActivity() {
                 .fillMaxSize()
                 .statusBarsPadding(),
         ) {
-            Header(dark = dark, onToggleTheme = onToggleTheme, onOpenSettings = { showSettings = true })
+            Header(
+                dark = dark,
+                onToggleTheme = onToggleTheme,
+                onOpenSettings = {
+                    rememberedCh = lastMac?.let { prefs.getString("ble_chan_$it", null) }
+                    showSettings = true
+                },
+            )
 
             Column(
                 Modifier
@@ -400,6 +409,15 @@ class MainActivity : ComponentActivity() {
                 },
                 showCheck = !checkHidden,
                 checkEnabled = checkRan,
+                rememberedLabel = rememberedCh?.let { raw ->
+                    runCatching {
+                        raw.split("|").joinToString(" / ") { it.take(8) }
+                    }.getOrNull()
+                },
+                onForgetChannel = {
+                    lastMac?.let { ObdHolder.repository.forgetChannel(it) }
+                    rememberedCh = null
+                },
                 onShowCheck = {
                     checkHidden = !it
                     prefs.edit().putBoolean("check_hidden", !it).apply()
@@ -979,6 +997,8 @@ class MainActivity : ComponentActivity() {
         showCheck: Boolean,
         checkEnabled: Boolean,
         onShowCheck: (Boolean) -> Unit,
+        rememberedLabel: String?,
+        onForgetChannel: () -> Unit,
         onDismiss: () -> Unit,
     ) {
         AlertDialog(
@@ -1029,6 +1049,25 @@ class MainActivity : ComponentActivity() {
                         enabled = checkEnabled,
                         onChange = onShowCheck,
                     )
+                    rememberedLabel?.let { label ->
+                        Row(
+                            Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Remembered channel", style = MaterialTheme.typography.titleSmall)
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    "$label — the channel this adapter proved. Forget it if " +
+                                        "reconnects start landing on the wrong channel again.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            OutlinedButton(onClick = onForgetChannel) { Text("Forget") }
+                        }
+                    }
                 }
             },
         )
