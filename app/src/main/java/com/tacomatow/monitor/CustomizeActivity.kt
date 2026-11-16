@@ -578,28 +578,32 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                             )
                             share("Tacoma customize diff", text)
                         },
-                        onRecord = {
+                        onRecord = { change ->
+                            // One block per label. Recording every block the
+                            // diff touched used to stamp ten entries with one
+                            // setting name, nine of which were vehicle state.
                             val at = System.currentTimeMillis()
-                            val added = shown.changes.flatMap { c ->
-                                c.byteChanges.map { b ->
-                                    ChangeRecord(
-                                        label = shownLabel,
-                                        header = c.header,
-                                        ecuLabel = c.ecuLabel,
-                                        lid = c.lid,
-                                        byteIndex = b.index,
-                                        before = b.before,
-                                        after = b.after,
-                                        at = at,
-                                        year = currentProfile.year,
-                                        trim = currentProfile.trim,
-                                        calibration = currentProfile.calibration,
-                                    )
-                                }
+                            val added = change.byteChanges.map { b ->
+                                ChangeRecord(
+                                    label = shownLabel,
+                                    header = change.header,
+                                    ecuLabel = change.ecuLabel,
+                                    lid = change.lid,
+                                    byteIndex = b.index,
+                                    before = b.before,
+                                    after = b.after,
+                                    at = at,
+                                    year = currentProfile.year,
+                                    trim = currentProfile.trim,
+                                    calibration = currentProfile.calibration,
+                                )
                             }
                             if (added.isNotEmpty()) {
                                 records.addAll(added)
                                 CustomizeRecordStore.save(context, records.toList())
+                                message = "Recorded ${change.displayLid} ${change.ecuLabel} only. " +
+                                    "If that block and your setting disagree later, clear it and " +
+                                    "try the next candidate."
                             }
                         },
                     )
@@ -741,7 +745,7 @@ private fun DiffCard(
     diff: SnapshotDiff,
     label: String,
     onShare: () -> Unit,
-    onRecord: () -> Unit,
+    onRecord: (BlockChange) -> Unit,
 ) {
     Card(
         colors = CardDefaults.cardColors(
@@ -771,7 +775,23 @@ private fun DiffCard(
             )
             if (diff.changes.isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))
-                Button(onClick = onRecord) { Text("Save to records") }
+                Text(
+                    if (diff.hasSpread) {
+                        "${diff.ecusChanged} modules changed. One setting normally moves one " +
+                            "block in the module that owns it — here " +
+                            diff.changes.map { it.ecuLabel }.distinct().joinToString(", ") +
+                            ". The others are usually vehicle state (key, doors, lights, " +
+                            "blower) that differed between the scans. Scan twice with nothing " +
+                            "changed to see which blocks move on their own, then record only " +
+                            "the block behind the setting."
+                    } else {
+                        "Record only the block behind the setting. One block per label, so " +
+                            "the mapping stays honest."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (diff.hasSpread) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             Spacer(Modifier.height(8.dp))
 
@@ -787,7 +807,7 @@ private fun DiffCard(
 
             diff.changes.forEach { change ->
                 Spacer(Modifier.height(10.dp))
-                ChangeRow(change)
+                ChangeRow(change, onRecord = { onRecord(change) })
             }
 
             if (diff.gained.isNotEmpty()) {
@@ -813,7 +833,7 @@ private fun DiffCard(
 }
 
 @Composable
-private fun ChangeRow(change: BlockChange) {
+private fun ChangeRow(change: BlockChange, onRecord: () -> Unit) {
     Column {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(
@@ -849,6 +869,20 @@ private fun ChangeRow(change: BlockChange) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+        }
+        Spacer(Modifier.height(4.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onRecord) {
+                Text("Record ${change.displayLid}")
+            }
+            Text(
+                when (val bits = change.changedBitCount) {
+                    1 -> "1 bit — looks like one option"
+                    else -> "$bits bits — more like state"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

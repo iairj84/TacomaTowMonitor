@@ -124,6 +124,15 @@ object CustomizeExplorer {
         if (diff.changes.isEmpty()) {
             sb.appendLine("No block payloads changed.")
         } else {
+            if (diff.hasSpread) {
+                sb.appendLine(
+                    "WARNING: ${diff.ecusChanged} modules changed. One setting normally moves " +
+                        "one block in one module; the rest is usually vehicle state that " +
+                        "differed between the scans. Rescan without changing anything to " +
+                        "see which blocks move on their own.",
+                )
+                sb.appendLine()
+            }
             for (c in diff.changes) {
                 sb.appendLine("0x%02X  %s  (%s)".format(c.lid, c.ecuLabel, c.header))
                 sb.appendLine("  before: ${c.beforeHex}")
@@ -193,6 +202,18 @@ data class BlockChange(
     val byteChanges: List<ByteChange>,
 ) {
     val displayLid: String get() = "0x%02X".format(lid)
+
+    /** Total bits that moved in this block. */
+    val changedBitCount: Int get() = byteChanges.sumOf { it.changedBits.size }
+
+    /**
+     * One byte, one bit — what a single option toggle looks like.
+     *
+     * A boolean setting flips exactly one bit. A block whose payload moved by
+     * six or seven bits did not record an option being chosen; it recorded
+     * the module being in a different state (key in, door open, blower on).
+     */
+    val isSingleBit: Boolean get() = byteChanges.size == 1 && changedBitCount == 1
 }
 
 /** Result of comparing two customize sweeps. */
@@ -203,6 +224,30 @@ data class SnapshotDiff(
     val compared: Int,
 ) {
     val identical: Boolean get() = changes.isEmpty() && gained.isEmpty() && lost.isEmpty()
+
+    /** Distinct modules whose blocks moved. */
+    val ecusChanged: Int get() = changes.map { it.header }.distinct().size
+
+    /**
+     * More than one module moved.
+     *
+     * A single customization normally moves one block in the one ECU that
+     * owns it. When the meter and the A/C amplifier move too, those blocks are
+     * reporting vehicle state — key position, doors, lights, blower — that
+     * differed between the two scans, not the setting. Recording them is how
+     * a mapping table fills with entries that are true once and never again.
+     */
+    val hasSpread: Boolean get() = ecusChanged > 1
+
+    /**
+     * Blocks that look like the setting itself: one bit, in one module.
+     *
+     * Empty when the diff is spread across modules, because then even a
+     * single-bit move cannot be told apart from state that happened to move
+     * by one bit.
+     */
+    val candidates: List<BlockChange>
+        get() = if (hasSpread) emptyList() else changes.filter { it.isSingleBit }
 }
 
 data class LidReading(
