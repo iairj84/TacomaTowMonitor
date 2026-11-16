@@ -170,6 +170,23 @@ class CustomizeDiffTest {
     }
 
     @Test
+    fun `survey lists header lid length and payload`() {
+        val text = CustomizeExplorer.describeSurvey(
+            listOf(
+                reading("750", "Main body ECU", 0xA4, "12 34"),
+                reading("7C0", "Combination meter", 0x11, "AB"),
+                LidReading("7C0", "Combination meter", 0x12, raw = null, payloadHex = null),
+            ),
+            "2019 TRD",
+        )
+        assertTrue(text.contains("2019 TRD"))
+        assertTrue(text.contains("2 blocks answered"))
+        assertTrue(text.contains("0xA4 (2 bytes): 12 34"))
+        assertTrue(text.contains("0x11 (1 byte): AB"))
+        assertFalse(text.contains("0x12"))
+    }
+
+    @Test
     fun `shared text warns about spread`() {
         val diff = diffOf(
             listOf(

@@ -865,7 +865,21 @@ private fun CustomizeScreen(onBack: () -> Unit) {
             // Supported blocks first, grouped by ECU.
             val hits = results.filter { it.supported }
             if (hits.isNotEmpty()) {
-                item { SectionHeading("BLOCKS THAT ANSWERED") }
+                item {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        SectionHeading("BLOCKS THAT ANSWERED")
+                        Spacer(Modifier.weight(1f))
+                        TextButton(onClick = {
+                            share(
+                                "Tacoma customize survey",
+                                CustomizeExplorer.describeSurvey(
+                                    hits,
+                                    currentProfile.summary(),
+                                ),
+                            )
+                        }) { Text("Share") }
+                    }
+                }
                 items(hits, key = { "${it.header}-${it.lid}" }) { reading ->
                     ReadingRow(reading)
                 }

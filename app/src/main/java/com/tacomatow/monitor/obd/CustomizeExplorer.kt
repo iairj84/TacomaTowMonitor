@@ -63,6 +63,29 @@ object CustomizeExplorer {
         bytes?.joinToString(" ") { "%02X".format(it) }
 
     /**
+     * Plain-text survey of answering blocks: header, LID, byte length and
+     * payload hex, grouped by ECU. Built for sending straight from the truck —
+     * no retyping, nothing to misalign. Unsupported blocks are omitted.
+     */
+    fun describeSurvey(readings: List<LidReading>, vehicle: String): String = buildString {
+        val hits = readings.filter { it.supported }
+            .sortedWith(compareBy({ it.header }, { it.lid }))
+        appendLine("Customize survey — $vehicle")
+        appendLine("${hits.size} blocks answered")
+        var lastHeader: String? = null
+        hits.forEach { r ->
+            if (r.header != lastHeader) {
+                appendLine()
+                appendLine("${r.header} ${r.ecuLabel}")
+                lastHeader = r.header
+            }
+            val bytes = r.payloadHex!!.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+            val n = if (bytes.size == 1) "1 byte" else "${bytes.size} bytes"
+            appendLine("${r.displayLid} ($n): ${bytes.joinToString(" ")}")
+        }
+    }
+
+    /**
      * Compare two sweeps and report which blocks moved.
      *
      * This is the safe way to learn a layout: change ONE setting on the
