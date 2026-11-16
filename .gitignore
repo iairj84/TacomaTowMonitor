@@ -12,3 +12,6 @@ app/build/
 .DS_Store
 tow-logs/
 build.log
+
+# Release APKs are uploaded to GitHub releases, not tracked.
+TacomaTowMonitor-v*-debug.apk
