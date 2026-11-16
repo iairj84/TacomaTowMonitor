@@ -250,6 +250,8 @@ class Elm327Client(
     /**
      * Payload bytes after the positive-response echo, for any mode:
      * mode 22 -> "62"+pid, mode 21 -> "61"+pid, mode 01 -> "41"+pid.
+     * Multi-frame replies are reassembled; anything that is not a complete
+     * message starting with the echo is not data.
      */
     fun payloadFor(command: String, response: String): ByteArray? {
         val echo = when {
@@ -259,15 +261,10 @@ class Elm327Client(
             command.startsWith("09") -> "49" + command.substring(2)
             else -> return null
         }
-        val r = response.replace(" ", "")
-        if (r.contains("NODATA") || r.contains("ERROR") || r.contains("STOPPED") || r.contains("?")) return null
-        val idx = r.indexOf(echo)
-        if (idx < 0) return null
-        val hex = r.substring(idx + echo.length).takeWhile { it.isDigit() || it in 'A'..'F' }
-        if (hex.length < 2) return null
-        val out = ByteArray(hex.length / 2)
-        for (i in out.indices) out[i] = hex.substring(i * 2, i * 2 + 2).toInt(16).toByte()
-        return out
+        val echoBytes = echo.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        val msg = IsoTp.firstStartingWith(response, echoBytes) ?: return null
+        if (msg.size <= echoBytes.size) return null
+        return msg.copyOfRange(echoBytes.size, msg.size)
     }
 
     /**
@@ -311,39 +308,9 @@ class Elm327Client(
 
     /**
      * Parse "6221627XXXX" (Mode 22 -> 0x62) or "4105XX" (Mode 01 -> 0x41).
-     * Returns data bytes after the PID echo.
+     * Returns data bytes after the PID echo, reassembled across frames.
      */
-    private fun parseResponse(cmd: String, resp: String): ByteArray? {
-        val r = resp.replace(" ", "")
-        if (r.contains("NODATA") || r.contains("ERROR") ||
-            r.contains("STOPPED") || r.contains("?")
-        ) return null
-        // Mode 22 echo: "62" + pid(4 hex). Mode 01 echo: "41" + pid(2 hex).
-        val echoCandidates = when {
-            cmd.startsWith("22") -> listOf("62" + cmd.substring(2))
-            cmd.startsWith("01") -> listOf("41" + cmd.substring(2))
-            else -> emptyList()
-        }
-        for (echo in echoCandidates) {
-            val idx = r.indexOf(echo)
-            if (idx >= 0) {
-                val hex = r.substring(idx + echo.length)
-                    .takeWhile { it.isDigit() || it in 'A'..'F' }
-                if (hex.length >= 2) return hexToBytes(hex)
-            }
-        }
-        // Multi-ECU / CAN-ID prefixed frames (ATH1 on): find echo anywhere.
-        return null
-    }
-
-    private fun hexToBytes(hex: String): ByteArray {
-        val clean = hex.filter { it.isDigit() || it in 'A'..'F' }
-        val out = ByteArray(clean.length / 2)
-        for (i in out.indices) {
-            out[i] = clean.substring(i * 2, i * 2 + 2).toInt(16).toByte()
-        }
-        return out
-    }
+    private fun parseResponse(cmd: String, resp: String): ByteArray? = payloadFor(cmd, resp)
 
     fun close() {
         open = false
