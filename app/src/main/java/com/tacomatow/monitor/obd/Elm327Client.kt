@@ -329,7 +329,7 @@ class Elm327Client(
         if (framing == GatewayFraming.NONE) return null
         val read = "21%02X".format(lid and 0xFF)
         val cmd = if (framing == GatewayFraming.MANUAL) {
-            "%02X02%s".format(sub and 0xFF, read)
+            manualFrame("%02X02%s".format(sub and 0xFF, read))
         } else {
             read
         }
@@ -342,15 +342,22 @@ class Elm327Client(
         val framing = if (gatewaySub == (sub and 0xFF)) gatewayFraming else beginGateway(sub)
         if (framing == GatewayFraming.NONE) return false
         val cmd = if (framing == GatewayFraming.MANUAL) {
-            "%02X021003".format(sub and 0xFF)
+            manualFrame("%02X021003".format(sub and 0xFF))
         } else {
             "1003"
         }
         val r = transport.transact(cmd, 2_500)
-        return r != null && IsoTp.messages(r).any {
+        return r != null && IsoTp.messages(r, sub and 0xFF).any {
             it.isNotEmpty() && (it[0].toInt() and 0xFF) == 0x50
         }
     }
+
+    /**
+     * Under CAF0 nothing is formatted or padded — the bytes given are the
+     * frame. Many ECUs ignore diagnostic frames short of 8 bytes, so hand
+     * over a full one; costs nothing.
+     */
+    private fun manualFrame(hex: String): String = hex.padEnd(16, '0')
 
     /**
      * TesterPresent with response suppression, for long sweeps. The extended
@@ -368,7 +375,7 @@ class Elm327Client(
                     if (gatewaySub == (sub and 0xFF)) gatewayFraming else beginGateway(sub)
                 if (framing == GatewayFraming.NONE) return
                 val cmd = if (framing == GatewayFraming.MANUAL) {
-                    "%02X023E80".format(sub and 0xFF)
+                    manualFrame("%02X023E80".format(sub and 0xFF))
                 } else {
                     "3E80"
                 }
@@ -432,7 +439,7 @@ class Elm327Client(
      * Multi-frame replies are reassembled; anything that is not a complete
      * message starting with the echo is not data.
      */
-    fun payloadFor(command: String, response: String): ByteArray? {
+    fun payloadFor(command: String, response: String, gatewaySub: Int? = null): ByteArray? {
         val echo = when {
             command.startsWith("22") -> "62" + command.substring(2)
             command.startsWith("21") -> "61" + command.substring(2)
@@ -441,7 +448,7 @@ class Elm327Client(
             else -> return null
         }
         val echoBytes = echo.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-        val msg = IsoTp.firstStartingWith(response, echoBytes) ?: return null
+        val msg = IsoTp.firstStartingWith(response, echoBytes, gatewaySub) ?: return null
         if (msg.size <= echoBytes.size) return null
         return msg.copyOfRange(echoBytes.size, msg.size)
     }

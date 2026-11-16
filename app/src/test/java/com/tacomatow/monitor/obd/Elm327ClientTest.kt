@@ -96,7 +96,13 @@ class Elm327ClientTest {
         assertEquals(Elm327Client.GatewayFraming.MANUAL, c.beginGateway(0x40))
         c.readGatewayLid(0x40, 0x14)
         assertTrue("formatting still on", sent.contains("ATCAF0"))
-        assertEquals("40022114", sent.last())
+        // CAF0 sends exactly the bytes given, so pad to a full 8-byte frame:
+        // short diagnostic frames are ignored by many ECUs.
+        assertEquals("4002211400000000", sent.last())
+        c.enterGatewaySession(0x40)
+        assertEquals("4002100300000000", sent.last())
+        c.sendTesterPresent(Elm327Client.GATEWAY_HEADER, 0x40)
+        assertEquals("40023E8000000000", sent.last())
     }
 
     @Test

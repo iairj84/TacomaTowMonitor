@@ -152,6 +152,44 @@ class IsoTpTest {
     }
 
     @Test
+    fun `gateway stripped layout parses with the sub-target known`() {
+        // CEA on: the adapter strips the extension on receive, so the length
+        // byte follows the header. Eating it instead parsed to nothing.
+        assertArrayEquals(
+            bytes(0x61, 0x14, 0x9A, 0x26, 0x11),
+            IsoTp.messages("758 05 61 14 9A 26 11", 0x40).single(),
+        )
+        assertArrayEquals(
+            bytes(0x61, 0x12, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00),
+            IsoTp.messages(
+                "758 10 09 61 12 00 20 00 00\r758 21 00 00 00 00 00 00 00\r",
+                0x40,
+            ).single(),
+        )
+    }
+
+    @Test
+    fun `gateway stripped layout parses packed across lines`() {
+        val raw = "7581009611200200000\r7582100000000000000\r"
+        assertArrayEquals(
+            bytes(0x61, 0x12, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00),
+            IsoTp.messages(raw, 0x40).single(),
+        )
+    }
+
+    @Test
+    fun `gateway printed layout still parses with the sub-target known`() {
+        assertArrayEquals(
+            bytes(0x61, 0x14, 0x9A, 0x26),
+            IsoTp.messages("758 40 04 61 14 9A 26", 0x40).single(),
+        )
+        assertArrayEquals(
+            bytes(0x9A, 0x26),
+            client.payloadFor("2114", "758 40 04 61 14 9A 26", 0x40),
+        )
+    }
+
+    @Test
     fun `gateway multiline reassembles packed`() {
         val raw = "758401009611200200000\r758402100000000000000\r"
         assertArrayEquals(

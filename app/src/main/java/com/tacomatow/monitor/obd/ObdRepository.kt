@@ -817,7 +817,7 @@ class ObdRepository(
                         null
                     }
                 }
-                val payload = raw?.let { c.payloadFor(readCommand, it) }
+                val payload = raw?.let { c.payloadFor(readCommand, it, target.sub) }
                 out += LidReading(
                     header = target.header,
                     ecuLabel = target.label,

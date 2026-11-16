@@ -18,15 +18,23 @@ package com.tacomatow.monitor.obd
  *
  * The 0x750 gateway answers on 0x758 with the sub-target address (e.g.
  * 0x40 Main Body) as the first byte — ISO 15765-2 mixed addressing. That
- * byte is consumed like a second header before PCI parsing.
+ * byte is consumed like a second header before PCI parsing, but only when
+ * it really is the sub-target: an adapter with extended addressing on
+ * strips it on receive, and eating the length byte instead parses every
+ * gateway reply to nothing.
  */
 object IsoTp {
 
     /** Reply ID of the 0x750 gateway: first byte after it is the sub-target. */
     private const val GATEWAY_REPLY_ID = "758"
 
-    /** Every complete message in the reply: data bytes after any PCI, headers gone. */
-    fun messages(raw: String): List<ByteArray> {
+    /**
+     * Every complete message in the reply: data bytes after any PCI, headers gone.
+     *
+     * [gatewaySub] is the sub-target the request went to (0x40 for Main
+     * Body), or null when it is unknown. It decides the 758 question above.
+     */
+    fun messages(raw: String, gatewaySub: Int? = null): List<ByteArray> {
         val upper = raw.uppercase()
         if (upper.contains("NO DATA") || upper.contains("UNABLE TO CONNECT") ||
             upper.contains("ERROR") || upper.contains("STOPPED") || upper.contains("?")
@@ -47,14 +55,14 @@ object IsoTp {
                     joined.append(lines[i])
                     i++
                 }
-                out += messagesPacked(joined.toString())
+                out += messagesPacked(joined.toString(), gatewaySub)
             } else {
                 val tokens = mutableListOf<String>()
                 while (i < lines.size && !lines[i].isPackedLine()) {
                     tokens += lines[i].splitToTokens()
                     i++
                 }
-                out += messagesTokenized(tokens)
+                out += messagesTokenized(tokens, gatewaySub)
             }
         }
         return out
@@ -67,23 +75,42 @@ object IsoTp {
         trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
 
     /** First message whose data starts with these bytes, or null. */
-    fun firstStartingWith(raw: String, echo: ByteArray): ByteArray? =
-        messages(raw).firstOrNull { m ->
+    fun firstStartingWith(raw: String, echo: ByteArray, gatewaySub: Int? = null): ByteArray? =
+        messages(raw, gatewaySub).firstOrNull { m ->
             m.size >= echo.size && m.copyOfRange(0, echo.size).contentEquals(echo)
         }
 
+    /**
+     * Whether the byte after a 758 header is the sub-target address.
+     *
+     * Consume it only when it equals the sub-target we asked: 0x40 can never
+     * be a PCI length byte, so an adapter that strips the extension on
+     * receive (CEA on) and one that prints it (manual framing) then both
+     * parse. When the sub-target is unknown (a shared log), fall back to
+     * stripping bytes that cannot start — or, mid-message, continue — a
+     * frame, which is exactly the old behavior for Main Body and fails
+     * closed otherwise.
+     */
+    private fun isExtensionByte(v: Int, gatewaySub: Int?, continuation: Boolean): Boolean {
+        if (gatewaySub != null) return v == (gatewaySub and 0xFF)
+        return if (continuation) v ushr 4 != 2 else v ushr 4 > 1
+    }
+
     // ---- spaced frames: "7E8 10 0A 43 04 … 7E8 21 …" ----
 
-    private fun messagesTokenized(tokens: List<String>): List<ByteArray> {
+    private fun messagesTokenized(tokens: List<String>, gatewaySub: Int?): List<ByteArray> {
         val out = mutableListOf<ByteArray>()
         var i = 0
         while (i < tokens.size) {
             val t = tokens[i]
             if (isHeader(t)) {
-                // Gateway reply: consume the sub-target address byte too.
+                // Gateway reply: consume the sub-target address byte, but
+                // only when it is one — a stripped layout starts with the
+                // PCI here, and eating that parses to nothing.
                 if (t == GATEWAY_REPLY_ID) {
                     val ae = tokens.getOrNull(i + 1)
-                    if (ae != null && ae.length == 2 && ae.toIntOrNull(16) != null) i++
+                    val v = if (ae != null && ae.length == 2) ae.toIntOrNull(16) else null
+                    if (v != null && isExtensionByte(v, gatewaySub, continuation = false)) i++
                 }
                 i++
                 continue
@@ -120,11 +147,15 @@ object IsoTp {
                             var j = i + 1
                             if (f == GATEWAY_REPLY_ID) {
                                 val ae = tokens.getOrNull(j)
-                                if (ae == null || ae.length != 2 || ae.toIntOrNull(16) == null) {
+                                val v = if (ae != null && ae.length == 2) ae.toIntOrNull(16) else null
+                                if (v == null) {
                                     broken = true
                                     break
                                 }
-                                j++
+                                // A stripped layout carries the
+                                // consecutive-frame PCI here, not the
+                                // sub-target — only skip a real one.
+                                if (isExtensionByte(v, gatewaySub, continuation = true)) j++
                             }
                             val next = tokens.getOrNull(j)?.toIntOrNull(16)
                             if (room != 0 || next == null || next ushr 4 != 2) {
@@ -170,7 +201,7 @@ object IsoTp {
 
     // ---- packed frames: "7E8100A4304…7E821…" (no spaces) ----
 
-    private fun messagesPacked(s: String): List<ByteArray> {
+    private fun messagesPacked(s: String, gatewaySub: Int?): List<ByteArray> {
         if (s.length < 2 || s.any { !it.isDigit() && it !in 'A'..'F' }) return emptyList()
         // Frames may or may not carry their header, but a session is
         // consistent — and whichever way parses the whole string exactly is
@@ -180,8 +211,8 @@ object IsoTp {
             if (p.second == s.length ||
                 (p.first.isNotEmpty() && isPaddingTail(s, p.second))
             ) p.first else null
-        return accept(parsePacked(s, withHeaders = true))
-            ?: accept(parsePacked(s, withHeaders = false))
+        return accept(parsePacked(s, withHeaders = true, gatewaySub))
+            ?: accept(parsePacked(s, withHeaders = false, gatewaySub))
             ?: emptyList()
     }
 
@@ -198,7 +229,11 @@ object IsoTp {
         return true
     }
 
-    private fun parsePacked(s: String, withHeaders: Boolean): Pair<List<ByteArray>, Int> {
+    private fun parsePacked(
+        s: String,
+        withHeaders: Boolean,
+        gatewaySub: Int?,
+    ): Pair<List<ByteArray>, Int> {
         val out = mutableListOf<ByteArray>()
         var i = 0
         while (i < s.length) {
@@ -206,11 +241,14 @@ object IsoTp {
             if (withHeaders && isCanIdAt(s, i)) {
                 val gateway = s.startsWith(GATEWAY_REPLY_ID, i)
                 i += 3
-                // Gateway replies carry the sub-target address before the PCI.
-                // Non-hex here fails the PCI parse below — fail closed.
+                // Gateway replies carry the sub-target address before the
+                // PCI — unless the adapter already stripped it on receive,
+                // in which case the PCI follows the header directly.
                 if (gateway) {
                     if (i + 2 > s.length) return out to frameStart
-                    i += 2
+                    val ext = s.substring(i, i + 2).toIntOrNull(16)
+                        ?: return out to frameStart
+                    if (isExtensionByte(ext, gatewaySub, continuation = false)) i += 2
                 }
             }
             if (i + 2 > s.length) return out to frameStart
@@ -243,7 +281,9 @@ object IsoTp {
                                 i += 3
                                 if (gateway) {
                                     if (i + 2 > s.length) return out to frameStart
-                                    i += 2
+                                    val ext = s.substring(i, i + 2).toIntOrNull(16)
+                                        ?: return out to frameStart
+                                    if (isExtensionByte(ext, gatewaySub, continuation = true)) i += 2
                                 }
                             }
                             if (i + 2 > s.length) return out to frameStart
