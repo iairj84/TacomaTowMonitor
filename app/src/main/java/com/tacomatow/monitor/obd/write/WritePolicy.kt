@@ -29,6 +29,7 @@ enum class RefusalRule {
     LOW_VOLTAGE,
     ADAPTER_UNTRUSTED,
     COOLDOWN,
+    VOLATILE_LIVE_DATA,
 }
 
 /** Exactly one byte of one block, with the value it holds and the value wanted. */
@@ -66,6 +67,14 @@ data class WriteConditions(
     val engineRunning: Boolean = false,
     val lastWriteToSameLidMillisAgo: Long? = null,
     val lastReadRefused: Boolean = false,
+    /**
+     * True when idle scans saw this block move with nothing changed, so the
+     * block carries live data rather than stored settings. A byte write is a
+     * whole-block rewrite (read, modify one byte, write back): sending back a
+     * stale copy of somebody else's live bytes is how a setting change
+     * corrupts state it never meant to touch.
+     */
+    val isKnownVolatile: Boolean = false,
 )
 
 sealed interface WriteDecision {
@@ -132,6 +141,20 @@ object WritePolicy {
                 RefusalRule.UNRECOGNISED_TARGET,
                 "Refused: this block is addressed directly and takes no sub-target.",
                 "$header/$lidHex was given sub-target 0x%02X.".format(target.sub),
+            )
+        }
+
+        // 1c. A block that moves on its own is live data, not a setting.
+        //     Meter and A/C blocks that drift across idle scans (fuel level,
+        //     dimmer, blower, doors) fail here even when the target byte looks
+        //     steady: the write would still send back a stale copy of the
+        //     drifting bytes around it.
+        if (conditions.isKnownVolatile) {
+            return refuse(
+                RefusalRule.VOLATILE_LIVE_DATA,
+                "Not writing: this block moves on its own, so it is live data, not a stored setting.",
+                "$header/$lidHex drifted across scans taken with nothing changed; " +
+                    "a byte write would send back a stale copy of its live bytes.",
             )
         }
 

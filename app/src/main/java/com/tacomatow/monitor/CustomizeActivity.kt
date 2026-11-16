@@ -214,9 +214,10 @@ private fun CustomizeScreen(onBack: () -> Unit) {
         mutableStateOf(CustomizeKnownBlocks.load(context, currentProfile))
     }
     var lastScanFast by remember { mutableStateOf(false) }
-    // Blocks that moved between scans with nothing changed, learned on this
-    // truck. Diffs ignore them, so a volatile meter block cannot be mistaken
-    // for the setting.
+    // Per-bit noise masks learned on this truck: which bits moved between
+    // scans with nothing changed. Diffs subtract only those bits, so a
+    // setting in a steady byte of a lively block is still found. What was
+    // subtracted stays visible under the diff.
     var noiseBlocks by remember(profileKey) {
         mutableStateOf(CustomizeNoiseStore.load(context))
     }
@@ -250,7 +251,7 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                 }
                 runs += run
             }
-            val learned = CustomizeNoise.volatileAcross(runs)
+            val learned = CustomizeNoise.masksAcross(runs)
             noiseBlocks = learned
             CustomizeNoiseStore.save(context, learned)
             if (!useKnown) knownBlocks = CustomizeKnownBlocks.record(context, currentProfile, runs.last())
@@ -262,8 +263,10 @@ private fun CustomizeScreen(onBack: () -> Unit) {
             message = if (learned.isEmpty()) {
                 "$answering blocks read 3 times with nothing changed and none moved — nothing to subtract."
             } else {
-                "${learned.size} of $answering blocks moved on their own across 3 scans. " +
-                    "Diffs now ignore them."
+                val bits = learned.values.sumOf { mask -> mask.count { it != 0 } }
+                "${learned.size} of $answering blocks moved on their own across 3 scans " +
+                    "($bits drifting byte(s)). Diffs now ignore those bits only — " +
+                    "steady bits in the same blocks still count."
             }
         }
     }
@@ -436,20 +439,21 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                         Spacer(Modifier.size(8.dp))
                         if (noiseBlocks.isNotEmpty()) {
                             TextButton(onClick = {
-                                noiseBlocks = emptySet()
+                                noiseBlocks = emptyMap()
                                 CustomizeNoiseStore.clear(context)
-                                message = "Noise set cleared — every block counts again."
+                                message = "Noise set cleared — every bit counts again."
                             }) { Text("Clear") }
                         }
                     }
                     Text(
                         if (noiseBlocks.isEmpty()) {
-                            "Some blocks move on their own (fuel, dimmer, doors). Scan 3 times " +
-                                "with nothing changed and those blocks are subtracted from every " +
-                                "diff."
+                            "Some bits move on their own (fuel, dimmer, doors). Scan 3 times " +
+                                "with nothing changed and those bits are subtracted from every " +
+                                "diff — steady bits in the same blocks still count."
                         } else {
-                            "${noiseBlocks.size} blocks are known to move on their own and are " +
-                                "left out of diffs. Re-learn after a battery pull or a big " +
+                            val bits = noiseBlocks.values.sumOf { mask -> mask.count { it != 0 } }
+                            "${noiseBlocks.size} blocks have bits known to move on their own " +
+                                "($bits drifting byte(s) ignored). Re-learn after a battery pull or a big " +
                                 "temperature change."
                         },
                         style = MaterialTheme.typography.bodySmall,
@@ -896,8 +900,10 @@ private fun DiffCard(
             if (diff.noise.isNotEmpty()) {
                 Spacer(Modifier.height(10.dp))
                 Text(
-                    "Ignored — these moved too, but they move on their own: " +
-                        diff.noise.joinToString(", ") { it.displayLid + " " + it.ecuLabel },
+                    "Ignored — these bits moved too, but they move on their own: " +
+                        diff.noise.joinToString(", ") {
+                            it.displayLid + " " + it.ecuLabel + " (" + it.byteChanges.joinToString(", ") { b -> b.describe() } + ")"
+                        },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

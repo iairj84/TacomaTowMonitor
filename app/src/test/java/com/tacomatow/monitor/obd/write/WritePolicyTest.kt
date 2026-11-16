@@ -193,6 +193,25 @@ class WritePolicyTest {
     }
 
     @Test
+    fun `a block that drifts on its own is never writable`() {
+        // Idle scans saw this block move with nothing changed: it carries
+        // live data, and a byte write would send back a stale copy of the
+        // drifting bytes around the target.
+        assertEquals(
+            RefusalRule.VOLATILE_LIVE_DATA,
+            rule(conditions = WriteConditions(isKnownVolatile = true)),
+        )
+    }
+
+    @Test
+    fun `a steady block stays writable`() {
+        assertEquals(
+            WriteDecision.Allow,
+            WritePolicy.evaluate(bodyWrite, WriteConditions(isKnownVolatile = false)),
+        )
+    }
+
+    @Test
     fun `a write to the same block after the cooldown is allowed`() {
         assertEquals(
             WriteDecision.Allow,
@@ -232,6 +251,7 @@ class WritePolicyTest {
             WriteConditions(adapterTrusted = false),
             WriteConditions(lastWriteToSameLidMillisAgo = 1_000L),
             WriteConditions(lidsSelected = 3),
+            WriteConditions(isKnownVolatile = true),
         )
         conditions.forEach { c ->
             val decision = WritePolicy.evaluate(bodyWrite, c) as WriteDecision.Refuse

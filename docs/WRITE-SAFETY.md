@@ -56,6 +56,7 @@ A write is refused unless all of these are true:
 | Vehicle speed reads 0 and has read 0 for the last 5 samples | A write while driving is indefensible |
 | Battery voltage ≥ 12.0 V | Interrupted writes are how modules die |
 | The adapter is answering cleanly (no `CAN ERROR`, no `?`) | A degraded link must not carry a write |
+| The block never drifted across idle scans with nothing changed | A block that moves on its own is live data, not a setting — a byte write would send back a stale copy of its live bytes |
 
 ### Refuse by situation
 

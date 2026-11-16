@@ -71,11 +71,15 @@ object CustomizeExplorer {
          */
         probedKeys: Set<Pair<String, Int>>? = null,
         /**
-         * Blocks that move on their own, learned by scanning twice with
-         * nothing changed. Their changes are reported separately, never as
-         * the setting — see [CustomizeNoise].
+         * Per-bit noise masks learned by scanning with nothing changed.
+         * Bits in the mask moved on their own; their changes are reported
+         * separately, never as the setting — see [CustomizeNoise]. A block
+         * whose stable bits moved still counts: only the drifting bits are
+         * subtracted, so a setting in a steady byte of a lively block is
+         * still found. An entry with an empty mask is a legacy whole-block
+         * mark and hides the whole block.
          */
-        volatile: Set<Pair<String, Int>> = emptySet(),
+        noiseMasks: NoiseMasks = emptyMap(),
     ): SnapshotDiff {
         fun key(r: LidReading) = r.header to r.lid
         val beforeMap = before.filter { it.supported }.associateBy(::key)
@@ -96,15 +100,60 @@ object CustomizeExplorer {
                 val b = newTokens.getOrNull(i) ?: "—"
                 if (a == b) null else ByteChange(i, a, b)
             }
-            val change = BlockChange(
-                header = k.first,
-                ecuLabel = new.ecuLabel,
-                lid = k.second,
-                beforeHex = old.payloadHex ?: "",
-                afterHex = new.payloadHex ?: "",
-                byteChanges = moved,
-            )
-            if (k in volatile) noise += change else changes += change
+            val mask = noiseMasks[k]
+            if (mask == null) {
+                changes += BlockChange(
+                    header = k.first,
+                    ecuLabel = new.ecuLabel,
+                    lid = k.second,
+                    beforeHex = old.payloadHex ?: "",
+                    afterHex = new.payloadHex ?: "",
+                    byteChanges = moved,
+                )
+            } else if (mask.isEmpty()) {
+                noise += BlockChange(
+                    header = k.first,
+                    ecuLabel = new.ecuLabel,
+                    lid = k.second,
+                    beforeHex = old.payloadHex ?: "",
+                    afterHex = new.payloadHex ?: "",
+                    byteChanges = moved,
+                )
+            } else {
+                val stable = mutableListOf<ByteChange>()
+                val drifting = mutableListOf<ByteChange>()
+                for (b in moved) {
+                    val volatileBits = mask.getOrNull(b.index) ?: 0
+                    val changedMask = b.changedMask()
+                    // Unparseable bytes ("—") carry no bit evidence: keep them
+                    // with the change rather than silently subtracting them.
+                    if (changedMask == null || (changedMask and volatileBits.inv()) != 0) {
+                        stable += b
+                    } else {
+                        drifting += b
+                    }
+                }
+                if (stable.isNotEmpty()) {
+                    changes += BlockChange(
+                        header = k.first,
+                        ecuLabel = new.ecuLabel,
+                        lid = k.second,
+                        beforeHex = old.payloadHex ?: "",
+                        afterHex = new.payloadHex ?: "",
+                        byteChanges = stable,
+                    )
+                }
+                if (drifting.isNotEmpty()) {
+                    noise += BlockChange(
+                        header = k.first,
+                        ecuLabel = new.ecuLabel,
+                        lid = k.second,
+                        beforeHex = old.payloadHex ?: "",
+                        afterHex = new.payloadHex ?: "",
+                        byteChanges = drifting,
+                    )
+                }
+            }
         }
 
         return SnapshotDiff(
@@ -151,9 +200,9 @@ object CustomizeExplorer {
             }
         }
         if (diff.noise.isNotEmpty()) {
-            sb.appendLine("ignored (known to move on their own):")
+            sb.appendLine("ignored (bits known to move on their own):")
             diff.noise.forEach {
-                sb.appendLine("  0x%02X %s (%s)".format(it.lid, it.ecuLabel, it.header))
+                sb.appendLine("  0x%02X %s (%s): %s".format(it.lid, it.ecuLabel, it.header, it.byteChanges.joinToString(", ") { b -> b.describe() }))
             }
         }
         if (diff.gained.isNotEmpty()) {
@@ -173,6 +222,17 @@ data class ByteChange(val index: Int, val before: String, val after: String) {
 
     private val fromValue: Int? get() = before.toIntOrNull(16)
     private val toValue: Int? get() = after.toIntOrNull(16)
+
+    /**
+     * Bitmask of the bits that differ, or null when a byte is missing or
+     * unparsable. The diff keeps such bytes with the change: without bit
+     * evidence nothing may be subtracted.
+     */
+    fun changedMask(): Int? {
+        val a = fromValue ?: return null
+        val b = toValue ?: return null
+        return a xor b
+    }
 
     /**
      * Bit positions that differ, LSB first.

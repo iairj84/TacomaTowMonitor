@@ -95,13 +95,64 @@ class CustomizeDiffTest {
             reading("7C0", "Combination meter", 0x23, "95"),
             reading("7C4", "A/C amplifier", 0x26, "D1"),
         )
-        val learned = setOf("7C0" to 0x23, "7C4" to 0x26)
-        val diff = CustomizeExplorer.diff(before, after, volatile = learned)
+        val learned = mapOf(("7C0" to 0x23) to listOf(0xFF), ("7C4" to 0x26) to listOf(0xFF))
+        val diff = CustomizeExplorer.diff(before, after, noiseMasks = learned)
         assertEquals(1, diff.changes.size)
         assertEquals(0x14, diff.changes.single().lid)
         assertEquals(2, diff.noise.size)
         assertFalse(diff.hasSpread)
         assertEquals(1, diff.candidates.size)
+    }
+
+    @Test
+    fun `a stable bit in a lively block still counts`() {
+        // The user's caution: block 0x23 drifts in byte 0's low bits, but
+        // the setting lives in steady byte 1. Per-block filtering would
+        // hide it; per-bit filtering keeps it while still showing the drift.
+        val before = listOf(
+            reading("750", "Main body ECU", 0x14, "65"),
+            reading("7C0", "Combination meter", 0x23, "7A 00"),
+        )
+        val after = listOf(
+            reading("750", "Main body ECU", 0x14, "65"),
+            reading("7C0", "Combination meter", 0x23, "7B 01"),
+        )
+        // Idle scans saw only byte 0's low two bits drift.
+        val mask = mapOf(("7C0" to 0x23) to listOf(0x03, 0x00))
+        val diff = CustomizeExplorer.diff(before, after, noiseMasks = mask)
+        assertEquals(1, diff.changes.size)
+        assertEquals(0x23, diff.changes.single().lid)
+        // The change holds only steady byte 1; the drift stays visible.
+        assertEquals(listOf(1), diff.changes.single().byteChanges.map { it.index })
+        assertEquals(1, diff.noise.size)
+        assertEquals(listOf(0), diff.noise.single().byteChanges.map { it.index })
+    }
+
+    @Test
+    fun `masks learn per-bit drift from idle scans`() {
+        val body = reading("750", "Main body ECU", 0x14, "65")
+        val runs = listOf(
+            listOf(body, reading("7C0", "Combination meter", 0x23, "7A")),
+            listOf(body, reading("7C0", "Combination meter", 0x23, "7B")),
+            listOf(body, reading("7C0", "Combination meter", 0x23, "79")),
+        )
+        val masks = CustomizeNoise.masksAcross(runs)
+        // 7A^7B = 01, 7A^79 = 03: only the low two bits ever moved.
+        assertEquals(listOf(0x03), masks["7C0" to 0x23])
+        assertFalse(masks.containsKey("750" to 0x14))
+    }
+
+    @Test
+    fun `a change confined to drifting bits is fully ignored but still shown`() {
+        val before = listOf(reading("7C0", "Combination meter", 0x23, "7A"))
+        val after = listOf(reading("7C0", "Combination meter", 0x23, "7B"))
+        val mask = mapOf(("7C0" to 0x23) to listOf(0x03))
+        val diff = CustomizeExplorer.diff(before, after, noiseMasks = mask)
+        assertTrue(diff.changes.isEmpty())
+        assertEquals(1, diff.noise.size)
+        val text = CustomizeExplorer.describe(diff, "before", "after")
+        assertTrue(text.contains("ignored (bits known to move on their own)"))
+        assertTrue(text.contains("0x23"))
     }
 
     @Test
