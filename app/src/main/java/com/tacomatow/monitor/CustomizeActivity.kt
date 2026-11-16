@@ -65,6 +65,8 @@ import com.tacomatow.monitor.obd.CatalogSetting
 import com.tacomatow.monitor.obd.CustomizeCatalogue
 import com.tacomatow.monitor.obd.CustomizeExplorer
 import com.tacomatow.monitor.obd.CustomizeKnownBlocks
+import com.tacomatow.monitor.obd.CustomizeNoise
+import com.tacomatow.monitor.obd.CustomizeNoiseStore
 import com.tacomatow.monitor.obd.CustomizeMapping
 import com.tacomatow.monitor.obd.CustomizeRecordStore
 import com.tacomatow.monitor.obd.CustomizeSnapshotStore
@@ -212,6 +214,59 @@ private fun CustomizeScreen(onBack: () -> Unit) {
         mutableStateOf(CustomizeKnownBlocks.load(context, currentProfile))
     }
     var lastScanFast by remember { mutableStateOf(false) }
+    // Blocks that moved between scans with nothing changed, learned on this
+    // truck. Diffs ignore them, so a volatile meter block cannot be mistaken
+    // for the setting.
+    var noiseBlocks by remember(profileKey) {
+        mutableStateOf(CustomizeNoiseStore.load(context))
+    }
+
+    /**
+     * Three scans with nothing changed, then everything that moved between
+     * them is noise by definition. Three rather than two because a block that
+     * held still for a moment would otherwise survive as a candidate.
+     */
+    fun runNoiseLearn() {
+        if (scanning) return
+        message = null
+        scanning = true
+        scope.launch {
+            val useKnown = knownBlocks.isNotEmpty()
+            val plan = if (useKnown) knownBlocks.values.sumOf { it.size } else CustomizeExplorer.totalProbes
+            val runs = mutableListOf<List<LidReading>>()
+            for (pass in 1..3) {
+                done = 0
+                total = plan
+                val run = ObdHolder.repository.sweepCustomize(
+                    known = if (useKnown) knownBlocks else null,
+                ) { d, t ->
+                    done = d
+                    total = t
+                }
+                if (run.none { it.supported }) {
+                    scanning = false
+                    message = "Nothing answered on pass $pass — connect on the dashboard and retry."
+                    return@launch
+                }
+                runs += run
+            }
+            val learned = CustomizeNoise.volatileAcross(runs)
+            noiseBlocks = learned
+            CustomizeNoiseStore.save(context, learned)
+            if (!useKnown) knownBlocks = CustomizeKnownBlocks.record(context, currentProfile, runs.last())
+            results.clear()
+            results.addAll(runs.last())
+            lastScanFast = useKnown
+            scanning = false
+            val answering = runs.last().count { it.supported }
+            message = if (learned.isEmpty()) {
+                "$answering blocks read 3 times with nothing changed and none moved — nothing to subtract."
+            } else {
+                "${learned.size} of $answering blocks moved on their own across 3 scans. " +
+                    "Diffs now ignore them."
+            }
+        }
+    }
 
     // This screen owns the adapter while it is open. The dashboard sweep would
     // otherwise keep firing 22/1627 reads between probes of a scan: one serial
@@ -261,7 +316,7 @@ private fun CustomizeScreen(onBack: () -> Unit) {
         null
     }
     val diff: SnapshotDiff? = snapshot?.let {
-        CustomizeExplorer.diff(it.readings, current, probedKeys)
+        CustomizeExplorer.diff(it.readings, current, probedKeys, noiseBlocks)
     }
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
@@ -368,6 +423,34 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                                 val n = knownBlocks.values.sumOf { it.size }
                                 "$n blocks have answered on this truck — Re-scan known reads only those."
                             }
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedButton(
+                            onClick = { runNoiseLearn() },
+                            enabled = !scanning && state.connected,
+                        ) { Text("Learn noise · 3 scans") }
+                        Spacer(Modifier.size(8.dp))
+                        if (noiseBlocks.isNotEmpty()) {
+                            TextButton(onClick = {
+                                noiseBlocks = emptySet()
+                                CustomizeNoiseStore.clear(context)
+                                message = "Noise set cleared — every block counts again."
+                            }) { Text("Clear") }
+                        }
+                    }
+                    Text(
+                        if (noiseBlocks.isEmpty()) {
+                            "Some blocks move on their own (fuel, dimmer, doors). Scan 3 times " +
+                                "with nothing changed and those blocks are subtracted from every " +
+                                "diff."
+                        } else {
+                            "${noiseBlocks.size} blocks are known to move on their own and are " +
+                                "left out of diffs. Re-learn after a battery pull or a big " +
+                                "temperature change."
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -808,6 +891,16 @@ private fun DiffCard(
             diff.changes.forEach { change ->
                 Spacer(Modifier.height(10.dp))
                 ChangeRow(change, onRecord = { onRecord(change) })
+            }
+
+            if (diff.noise.isNotEmpty()) {
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "Ignored — these moved too, but they move on their own: " +
+                        diff.noise.joinToString(", ") { it.displayLid + " " + it.ecuLabel },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             if (diff.gained.isNotEmpty()) {

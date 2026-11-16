@@ -68,6 +68,49 @@ class CustomizeDiffTest {
     }
 
     @Test
+    fun `three control scans find the blocks that move on their own`() {
+        // Same truck, nothing changed: the meter and A/C drift, the body
+        // block holds still.
+        val body = reading("750", "Main body ECU", 0x14, "65")
+        val runs = listOf(
+            listOf(body, reading("7C0", "Combination meter", 0x23, "7A"), reading("7C4", "A/C amplifier", 0x26, "AC")),
+            listOf(body, reading("7C0", "Combination meter", 0x23, "95"), reading("7C4", "A/C amplifier", 0x26, "D1")),
+            listOf(body, reading("7C0", "Combination meter", 0x23, "84"), reading("7C4", "A/C amplifier", 0x26, "B8")),
+        )
+        val volatile = CustomizeNoise.volatileAcross(runs)
+        assertEquals(setOf("7C0" to 0x23, "7C4" to 0x26), volatile)
+    }
+
+    @Test
+    fun `a learned noise set leaves only the real change`() {
+        // The whole point: with noise subtracted, the same muddy diff reads
+        // as one candidate instead of three modules of churn.
+        val before = listOf(
+            reading("750", "Main body ECU", 0x14, "65"),
+            reading("7C0", "Combination meter", 0x23, "7A"),
+            reading("7C4", "A/C amplifier", 0x26, "AC"),
+        )
+        val after = listOf(
+            reading("750", "Main body ECU", 0x14, "25"),
+            reading("7C0", "Combination meter", 0x23, "95"),
+            reading("7C4", "A/C amplifier", 0x26, "D1"),
+        )
+        val learned = setOf("7C0" to 0x23, "7C4" to 0x26)
+        val diff = CustomizeExplorer.diff(before, after, volatile = learned)
+        assertEquals(1, diff.changes.size)
+        assertEquals(0x14, diff.changes.single().lid)
+        assertEquals(2, diff.noise.size)
+        assertFalse(diff.hasSpread)
+        assertEquals(1, diff.candidates.size)
+    }
+
+    @Test
+    fun `two runs are the minimum for learning noise`() {
+        val one = listOf(listOf(reading("750", "Main body ECU", 0x14, "65")))
+        assertTrue(CustomizeNoise.volatileAcross(one).isEmpty())
+    }
+
+    @Test
     fun `shared text warns about spread`() {
         val diff = diffOf(
             listOf(

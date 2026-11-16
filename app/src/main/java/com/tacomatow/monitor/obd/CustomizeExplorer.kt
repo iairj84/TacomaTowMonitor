@@ -70,6 +70,12 @@ object CustomizeExplorer {
          * stopped answering.
          */
         probedKeys: Set<Pair<String, Int>>? = null,
+        /**
+         * Blocks that move on their own, learned by scanning twice with
+         * nothing changed. Their changes are reported separately, never as
+         * the setting — see [CustomizeNoise].
+         */
+        volatile: Set<Pair<String, Int>> = emptySet(),
     ): SnapshotDiff {
         fun key(r: LidReading) = r.header to r.lid
         val beforeMap = before.filter { it.supported }.associateBy(::key)
@@ -78,6 +84,7 @@ object CustomizeExplorer {
 
         val shared = beforeMap.keys.intersect(afterMap.keys).sortedWith(order)
         val changes = mutableListOf<BlockChange>()
+        val noise = mutableListOf<BlockChange>()
         for (k in shared) {
             val old = beforeMap.getValue(k)
             val new = afterMap.getValue(k)
@@ -89,7 +96,7 @@ object CustomizeExplorer {
                 val b = newTokens.getOrNull(i) ?: "—"
                 if (a == b) null else ByteChange(i, a, b)
             }
-            changes += BlockChange(
+            val change = BlockChange(
                 header = k.first,
                 ecuLabel = new.ecuLabel,
                 lid = k.second,
@@ -97,6 +104,7 @@ object CustomizeExplorer {
                 afterHex = new.payloadHex ?: "",
                 byteChanges = moved,
             )
+            if (k in volatile) noise += change else changes += change
         }
 
         return SnapshotDiff(
@@ -107,6 +115,7 @@ object CustomizeExplorer {
                 .sortedWith(order)
                 .map(beforeMap::getValue),
             compared = shared.size,
+            noise = noise,
         )
     }
 
@@ -139,6 +148,12 @@ object CustomizeExplorer {
                 sb.appendLine("  after:  ${c.afterHex}")
                 for (b in c.byteChanges) sb.appendLine("  ${b.describe()}")
                 sb.appendLine()
+            }
+        }
+        if (diff.noise.isNotEmpty()) {
+            sb.appendLine("ignored (known to move on their own):")
+            diff.noise.forEach {
+                sb.appendLine("  0x%02X %s (%s)".format(it.lid, it.ecuLabel, it.header))
             }
         }
         if (diff.gained.isNotEmpty()) {
@@ -222,6 +237,8 @@ data class SnapshotDiff(
     val gained: List<LidReading>,
     val lost: List<LidReading>,
     val compared: Int,
+    /** Blocks that moved but are known to move on their own. */
+    val noise: List<BlockChange> = emptyList(),
 ) {
     val identical: Boolean get() = changes.isEmpty() && gained.isEmpty() && lost.isEmpty()
 
