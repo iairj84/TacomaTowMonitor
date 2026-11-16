@@ -84,6 +84,18 @@ class ObdRepository(
     }
 
     fun isGentle(): Boolean = gentle
+
+    /**
+     * Driver-chosen extras. Transmission pan/converter are always polled (the
+     * point of the app); everything else — coolant, oil, RPM, speed, adapter
+     * voltage — can be switched off in Settings so a slow dongle spends its
+     * time on what matters.
+     */
+    @Volatile private var enabled: Set<String> = setOf("coolant", "oil", "rpm", "speed", "voltage")
+
+    fun setMonitors(ids: Set<String>) {
+        enabled = ids.toSet()
+    }
     private var oilMisses = 0
     private var logFile: File? = null
     private var logDir: File? = null
@@ -119,16 +131,18 @@ class ObdRepository(
     }
 
     private fun publishDemo(pan: Float, conv: Float, coolant: Float, rpm: Float) {
+        val e = enabled
+        val all = mapOf(
+            "trans_pan" to gauge(TacomaPids.TRANS_PAN, pan),
+            "trans_conv" to gauge(TacomaPids.TRANS_CONVERTER, conv),
+            "coolant" to gauge(TacomaPids.COOLANT, coolant),
+            "oil" to GaugeReading("oil", "Engine Oil", null, "°F", "NO DATA"),
+            "rpm" to GaugeReading("rpm", "RPM", rpm, "rpm"),
+        )
         _state.update {
             it.copy(
-                readings = mapOf(
-                    "trans_pan" to gauge(TacomaPids.TRANS_PAN, pan),
-                    "trans_conv" to gauge(TacomaPids.TRANS_CONVERTER, conv),
-                    "coolant" to gauge(TacomaPids.COOLANT, coolant),
-                    "oil" to GaugeReading("oil", "Engine Oil", null, "°F", "NO DATA"),
-                    "rpm" to GaugeReading("rpm", "RPM", rpm, "rpm"),
-                ),
-                voltage = 13.8f,
+                readings = all.filterKeys { k -> k == "trans_pan" || k == "trans_conv" || e.contains(k) },
+                voltage = if (e.contains("voltage")) 13.8f else null,
                 lastUpdateMs = System.currentTimeMillis(),
             )
         }
@@ -595,8 +609,12 @@ class ObdRepository(
             val refusalMap = mutableMapOf<String, String>()
             while (isActive && c.isConnected()) {
                 val out = mutableMapOf<String, GaugeReading>()
-                // Transmission definitions are whatever detection found.
-                val pollList = listOf(panDef, convDef, TacomaPids.COOLANT, TacomaPids.OIL, TacomaPids.RPM, TacomaPids.SPEED)
+                // Transmission definitions are whatever detection found. The
+                // extras follow the driver's Settings; trans always polls.
+                val enabledNow = enabled
+                val pollList = listOf(panDef, convDef) + listOf(
+                    TacomaPids.COOLANT, TacomaPids.OIL, TacomaPids.RPM, TacomaPids.SPEED,
+                ).filter { enabledNow.contains(it.id) }
                 for (def in pollList) {
                     if (!isActive) break
                     val now0 = System.currentTimeMillis()
@@ -637,9 +655,9 @@ class ObdRepository(
                     out[def.id] = readingFor(def, v, lastGood[def.id], now)
                     delay(if (gentle) 350 else 150) // BLE needs a beat between header flips
                 }
-                val volts = withContext(Dispatchers.IO) {
+                val volts = if (enabledNow.contains("voltage")) withContext(Dispatchers.IO) {
                     try { c.readVoltage() } catch (_: Exception) { null }
-                }
+                } else null
                 _state.update {
                     it.copy(
                         readings = out,

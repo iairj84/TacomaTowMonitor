@@ -38,9 +38,11 @@ import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -150,6 +152,15 @@ class MainActivity : ComponentActivity() {
         val lastName = remember { prefs.getString("last_name", null) }
         var gentle by remember { mutableStateOf(prefs.getBoolean("gentle_session", false)) }
         LaunchedEffect(gentle) { ObdHolder.repository.setGentle(gentle) }
+        var showSettings by remember { mutableStateOf(false) }
+        var checkRan by remember { mutableStateOf(prefs.getBoolean("check_ran", false)) }
+        var checkHidden by remember { mutableStateOf(prefs.getBoolean("check_hidden", false)) }
+        var monitors by remember {
+            mutableStateOf(
+                MonitorOptions.map { it.first }.filter { prefs.getBoolean("mon_$it", true) }.toSet(),
+            )
+        }
+        LaunchedEffect(monitors) { ObdHolder.repository.setMonitors(monitors) }
         var autoTried by remember { mutableStateOf(false) }
         val context = LocalContext.current
 
@@ -200,7 +211,7 @@ class MainActivity : ComponentActivity() {
                 .fillMaxSize()
                 .statusBarsPadding(),
         ) {
-            Header(dark = dark, onToggleTheme = onToggleTheme)
+            Header(dark = dark, onToggleTheme = onToggleTheme, onOpenSettings = { showSettings = true })
 
             Column(
                 Modifier
@@ -279,29 +290,29 @@ class MainActivity : ComponentActivity() {
                     NoticeCard(it)
                 }
 
-                Spacer(Modifier.height(8.dp))
-                GentleCard(
-                    enabled = gentle,
-                    onChange = {
-                        gentle = it
-                        prefs.edit().putBoolean("gentle_session", it).apply()
-                    },
-                )
-
-                Spacer(Modifier.height(10.dp))
-                AdapterVerdictPanel(
-                    connected = state.connected,
-                    checking = checking,
-                    report = report,
-                    onRun = {
-                        checking = true
-                        report = null
-                        scope.launch {
-                            report = ObdHolder.repository.runAdapterCheck()
-                            checking = false
-                        }
-                    },
-                )
+                if (!checkHidden) {
+                    Spacer(Modifier.height(10.dp))
+                    AdapterVerdictPanel(
+                        connected = state.connected,
+                        checking = checking,
+                        report = report,
+                        canHide = checkRan || report != null,
+                        onHide = {
+                            checkHidden = true
+                            prefs.edit().putBoolean("check_hidden", true).apply()
+                        },
+                        onRun = {
+                            checking = true
+                            report = null
+                            scope.launch {
+                                report = ObdHolder.repository.runAdapterCheck()
+                                checking = false
+                                checkRan = true
+                                prefs.edit().putBoolean("check_ran", true).apply()
+                            }
+                        },
+                    )
+                }
 
                 Spacer(Modifier.height(14.dp))
                 GaugeCluster(state, onDemo = { ObdHolder.repository.startDemo() })
@@ -374,6 +385,29 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        if (showSettings) {
+            SettingsDialog(
+                gentle = gentle,
+                onGentle = {
+                    gentle = it
+                    prefs.edit().putBoolean("gentle_session", it).apply()
+                },
+                monitors = monitors,
+                onToggleMonitor = { id ->
+                    val on = !monitors.contains(id)
+                    monitors = if (on) monitors + id else monitors - id
+                    prefs.edit().putBoolean("mon_$id", on).apply()
+                },
+                showCheck = !checkHidden,
+                checkEnabled = checkRan,
+                onShowCheck = {
+                    checkHidden = !it
+                    prefs.edit().putBoolean("check_hidden", !it).apply()
+                },
+                onDismiss = { showSettings = false },
+            )
+        }
+
         if (showPicker) {
             BluetoothPicker(
                 onPick = { device, _ ->
@@ -396,7 +430,7 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun Header(dark: Boolean, onToggleTheme: () -> Unit) {
+    private fun Header(dark: Boolean, onToggleTheme: () -> Unit, onOpenSettings: () -> Unit) {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -412,6 +446,13 @@ class MainActivity : ComponentActivity() {
                 Text(
                     "Transmission monitor",
                     style = MaterialTheme.typography.headlineSmall,
+                )
+            }
+            IconButton(onClick = onOpenSettings) {
+                Icon(
+                    imageVector = Icons.Filled.Settings,
+                    contentDescription = "Settings",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             IconButton(onClick = onToggleTheme) {
@@ -533,6 +574,8 @@ class MainActivity : ComponentActivity() {
         connected: Boolean,
         checking: Boolean,
         report: com.tacomatow.monitor.obd.AdapterReport?,
+        canHide: Boolean,
+        onHide: () -> Unit,
         onRun: () -> Unit,
     ) {
         val palette = LocalTowPalette.current
@@ -563,6 +606,9 @@ class MainActivity : ComponentActivity() {
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f),
                     )
+                    if (canHide && !checking) {
+                        TextButton(onClick = onHide) { Text("Hide") }
+                    }
                     Button(onClick = onRun, enabled = connected && !checking) {
                         Text(if (checking) "Checking…" else if (report == null) "Run" else "Re-run")
                     }
@@ -915,36 +961,104 @@ class MainActivity : ComponentActivity() {
      * loud: an empty gauge reads as "the app is broken", while 7F 22 31 is
      * proof the request arrived and the calibration simply has no such data.
      */
-    /**
-     * Gentle session toggle. Aggressive manufacturer probing can leave a Toyota
-     * gateway refusing traffic, so this keeps a session to one probe with no
-     * extended-session request and slower polling.
-     */
+    /** Optional channels, toggled in Settings. Pan and converter are the app itself and stay on. */
+    private val MonitorOptions = listOf(
+        "coolant" to "Coolant",
+        "oil" to "Engine oil",
+        "rpm" to "RPM",
+        "speed" to "Speed",
+        "voltage" to "Adapter voltage",
+    )
+
     @Composable
-    private fun GentleCard(enabled: Boolean, onChange: (Boolean) -> Unit) {
-        Card(
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            modifier = Modifier.fillMaxWidth(),
-            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    private fun SettingsDialog(
+        gentle: Boolean,
+        onGentle: (Boolean) -> Unit,
+        monitors: Set<String>,
+        onToggleMonitor: (String) -> Unit,
+        showCheck: Boolean,
+        checkEnabled: Boolean,
+        onShowCheck: (Boolean) -> Unit,
+        onDismiss: () -> Unit,
+    ) {
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+            title = { Text("Settings") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    Text(
+                        "MONITORS",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Transmission pan and converter always poll — the rest is your call. " +
+                            "Switching extras off gives a slow dongle more time on what matters.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    MonitorOptions.forEach { (id, label) ->
+                        SwitchRow(label, null, monitors.contains(id)) { onToggleMonitor(id) }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "SESSION",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    SwitchRow(
+                        "Gentle session",
+                        "One probe, no extended-session request, no protocol retry, slower polling. " +
+                            "Use it when the truck has already stopped answering and you want the lightest possible touch.",
+                        gentle,
+                        onChange = onGentle,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "ADAPTER CHECK",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    SwitchRow(
+                        "Show adapter check",
+                        if (checkEnabled) "Run once from the home screen, then hide it here."
+                        else "Run the check from the home screen first — then you can hide it here.",
+                        showCheck,
+                        enabled = checkEnabled,
+                        onChange = onShowCheck,
+                    )
+                }
+            },
+        )
+    }
+
+    @Composable
+    private fun SwitchRow(
+        title: String,
+        subtitle: String?,
+        checked: Boolean,
+        enabled: Boolean = true,
+        onChange: (Boolean) -> Unit,
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text("Gentle session", style = MaterialTheme.typography.titleSmall)
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleSmall)
+                subtitle?.let {
                     Spacer(Modifier.height(2.dp))
                     Text(
-                        "One probe, no extended-session request, no protocol retry, slower " +
-                            "polling. Use it when the truck has already stopped answering and " +
-                            "you want the lightest possible touch.",
+                        it,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                Spacer(Modifier.width(12.dp))
-                Switch(checked = enabled, onCheckedChange = onChange)
             }
+            Spacer(Modifier.width(12.dp))
+            Switch(checked = checked, enabled = enabled, onCheckedChange = onChange)
         }
     }
 
