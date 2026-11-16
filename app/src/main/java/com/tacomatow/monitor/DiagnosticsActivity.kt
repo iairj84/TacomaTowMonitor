@@ -45,6 +45,7 @@ import androidx.compose.ui.platform.LocalContext
 import com.tacomatow.monitor.obd.DidProbe
 import com.tacomatow.monitor.obd.DidSweep
 import com.tacomatow.monitor.obd.DidVerdict
+import com.tacomatow.monitor.obd.DtcDescriptions
 import com.tacomatow.monitor.obd.DtcReport
 import com.tacomatow.monitor.obd.ObdHolder
 import com.tacomatow.monitor.ui.TacomaTheme
@@ -423,17 +424,32 @@ private fun DidSweepCard() {
 
 @Composable
 private fun DtcGroup(label: String, codes: List<String>) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+    Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
         Text(
             label,
-            style = MaterialTheme.typography.bodySmall,
+            style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(1f),
         )
-        Text(
-            if (codes.isEmpty()) "none" else codes.joinToString(", "),
-            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-        )
+        if (codes.isEmpty()) {
+            Text(
+                "none",
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+            )
+        } else {
+            codes.forEach { code ->
+                Text(
+                    code,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                )
+                Text(
+                    DtcDescriptions.describe(code)
+                        ?: "Manufacturer-specific — check a Toyota reference, not a generic list.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 8.dp, bottom = 2.dp),
+                )
+            }
+        }
     }
 }
 

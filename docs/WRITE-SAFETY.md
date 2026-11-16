@@ -14,6 +14,11 @@ Two principles drive everything below:
 
 Not legal advice. This is engineering policy plus the wording that policy needs.
 
+Reads are not writes and this document does not govern them: asking the truck
+for stored, pending or permanent trouble codes (modes 03/07/0A, MIL via 01 01)
+changes nothing and needs no safeguard from this spec. Clearing codes (mode 04)
+is a write like any other and inherits every refusal rule below.
+
 ---
 
 ## 1. Refusal rules — absolute, not settings
