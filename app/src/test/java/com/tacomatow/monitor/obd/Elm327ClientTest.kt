@@ -57,4 +57,56 @@ class Elm327ClientTest {
     fun `silent extended session is refused`() {
         assertFalse(clientFor("NO DATA").enterExtendedSession())
     }
+
+    // Gateway framing: records what would go to the adapter. The adapter's
+    // own length byte is the point — prefixing the sub-target by hand made the
+    // frame leave as "04 40 02 21 14", which the gateway reads as sub-target 4.
+    private fun recordingClient(sent: MutableList<String>, ceaReply: String) =
+        Elm327Client(object : ElmTransport {
+            override fun open(): Boolean = true
+            override fun transact(cmd: String, timeoutMs: Int): String? {
+                sent += cmd
+                return when {
+                    cmd == "ATCEA40" -> ceaReply
+                    cmd == "ATI" -> "ELM327 v1.5"
+                    cmd.startsWith("AT") || cmd.isEmpty() -> "OK"
+                    else -> null
+                }
+            }
+            override fun close() {}
+            override fun transcript(): List<String> = emptyList()
+        }).also { it.connect() }
+
+    @Test
+    fun `gateway sends a plain read when the adapter accepts CEA`() {
+        val sent = mutableListOf<String>()
+        val c = recordingClient(sent, ceaReply = "OK")
+        assertEquals(Elm327Client.GatewayFraming.ADAPTER_EXTENDED, c.beginGateway(0x40))
+        c.readGatewayLid(0x40, 0x14)
+        assertTrue("no CEA", sent.contains("ATCEA40"))
+        assertTrue("no tester address", sent.contains("ATTA40"))
+        assertTrue("no flow control data", sent.contains("ATFCSD40300000"))
+        assertEquals("2114", sent.last())
+    }
+
+    @Test
+    fun `gateway falls back to raw framing when CEA is refused`() {
+        val sent = mutableListOf<String>()
+        val c = recordingClient(sent, ceaReply = "?")
+        assertEquals(Elm327Client.GatewayFraming.MANUAL, c.beginGateway(0x40))
+        c.readGatewayLid(0x40, 0x14)
+        assertTrue("formatting still on", sent.contains("ATCAF0"))
+        assertEquals("40022114", sent.last())
+    }
+
+    @Test
+    fun `keep-alive through the gateway keeps the header`() {
+        val sent = mutableListOf<String>()
+        val c = recordingClient(sent, ceaReply = "OK")
+        c.beginGateway(0x40)
+        val headerChanges = sent.count { it.startsWith("AT SH") }
+        c.sendTesterPresent(Elm327Client.GATEWAY_HEADER, 0x40)
+        assertEquals("header flipped", headerChanges, sent.count { it.startsWith("AT SH") })
+        assertEquals("3E80", sent.last())
+    }
 }

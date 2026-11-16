@@ -33,23 +33,35 @@ object IsoTp {
         ) return emptyList()
         val lines = upper.split('\r', '\n').map { it.trim() }.filter { it.isNotEmpty() }
         if (lines.isEmpty()) return emptyList()
-        if (lines.size == 1) return messagesLine(lines[0])
-        val out = messagesTokenized(lines.flatMap { it.splitToTokens() }).toMutableList()
-        // A spaceless line is packed — a shared log, or a clone that omits
-        // spaces. Its giant token is skipped by the pass above, so parse it
-        // on its own. Disjoint by construction: equal bytes from two lines
-        // are two replies (e.g. two ECUs with the same codes), never dupes.
-        lines.filter { line -> line.none { it.isWhitespace() } }.forEach { line ->
-            out += messagesPacked(line)
+        // Frames of one message routinely land on different lines — the ELM
+        // prints a first frame and its consecutive frames on separate lines —
+        // so a message always spans a *run* of lines of the same shape, never
+        // a single line. Parsing each packed line alone dropped every
+        // multi-frame reply that arrived without spaces.
+        val out = mutableListOf<ByteArray>()
+        var i = 0
+        while (i < lines.size) {
+            if (lines[i].isPackedLine()) {
+                val joined = StringBuilder()
+                while (i < lines.size && lines[i].isPackedLine()) {
+                    joined.append(lines[i])
+                    i++
+                }
+                out += messagesPacked(joined.toString())
+            } else {
+                val tokens = mutableListOf<String>()
+                while (i < lines.size && !lines[i].isPackedLine()) {
+                    tokens += lines[i].splitToTokens()
+                    i++
+                }
+                out += messagesTokenized(tokens)
+            }
         }
         return out
     }
 
-    private fun messagesLine(line: String): List<ByteArray> {
-        val tokens = line.splitToTokens()
-        if (tokens.isEmpty()) return emptyList()
-        return if (tokens.size == 1) messagesPacked(tokens[0]) else messagesTokenized(tokens)
-    }
+    /** No spaces at all: a shared log, or a clone ignoring AT S1. */
+    private fun String.isPackedLine(): Boolean = isNotEmpty() && none { it.isWhitespace() }
 
     private fun String.splitToTokens(): List<String> =
         trim().split(Regex("\\s+")).filter { it.isNotEmpty() }

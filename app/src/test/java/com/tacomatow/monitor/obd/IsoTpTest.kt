@@ -83,7 +83,30 @@ class IsoTpTest {
     }
 
     @Test
-    fun `multiline packed lines parse independently`() {
+    fun `packed first frame joins its next line`() {
+        // The ELM prints one CAN frame per line. Parsing each packed line on
+        // its own silently dropped every multi-frame reply without spaces.
+        val raw = "7C81009611200200000\r7C82100000000000000\r"
+        assertArrayEquals(
+            bytes(0x61, 0x12, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00),
+            IsoTp.messages(raw).single(),
+        )
+    }
+
+    @Test
+    fun `packed calibration id joins across three lines`() {
+        // 09 04 answers with a 19-byte CALID message: a first frame plus two
+        // continuations, each on its own line, no spaces anywhere.
+        val raw = "7E81013490401414243\r7E8214445464748494A\r7E8224B4C4D4E4F50\r"
+        val msg = IsoTp.messages(raw).single()
+        assertEquals(19, msg.size)
+        assertEquals(0x49.toByte(), msg[0])
+        assertEquals(0x04.toByte(), msg[1])
+        assertEquals("ABCDEFGHIJKLMNOPQRST".take(16), String(msg.copyOfRange(3, 19)))
+    }
+
+    @Test
+    fun `multiline packed lines from two ECUs stay two messages`() {
         val raw = "7C80461149A26\r7C90461141122\r"
         val msgs = IsoTp.messages(raw)
         assertEquals(2, msgs.size)
@@ -120,8 +143,17 @@ class IsoTpTest {
     }
 
     @Test
-    fun `gateway multiline reassembles`() {
+    fun `gateway multiline reassembles spaced`() {
         val raw = "758 40 10 09 61 12 00 20 00 00\r758 40 21 00 00 00 00 00 00 00\r"
+        assertArrayEquals(
+            bytes(0x61, 0x12, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00),
+            IsoTp.messages(raw).single(),
+        )
+    }
+
+    @Test
+    fun `gateway multiline reassembles packed`() {
+        val raw = "758401009611200200000\r758402100000000000000\r"
         assertArrayEquals(
             bytes(0x61, 0x12, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00),
             IsoTp.messages(raw).single(),

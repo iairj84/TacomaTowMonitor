@@ -12,6 +12,7 @@ class WritePolicyTest {
         byteIndex = 1,
         before = "26",
         after = "27",
+        sub = WritePolicy.MAIN_BODY_SUB,
     )
 
     private fun rule(target: WriteTarget = bodyWrite, conditions: WriteConditions = WriteConditions()) =
@@ -26,11 +27,11 @@ class WritePolicyTest {
     fun `meter and AC blocks are writable`() {
         assertEquals(
             WriteDecision.Allow,
-            WritePolicy.evaluate(bodyWrite.copy(header = "7C0", lid = 0x21), WriteConditions()),
+            WritePolicy.evaluate(bodyWrite.copy(header = "7C0", lid = 0x21, sub = null), WriteConditions()),
         )
         assertEquals(
             WriteDecision.Allow,
-            WritePolicy.evaluate(bodyWrite.copy(header = "7C4", lid = 0x01), WriteConditions()),
+            WritePolicy.evaluate(bodyWrite.copy(header = "7C4", lid = 0x01, sub = null), WriteConditions()),
         )
     }
 
@@ -63,6 +64,27 @@ class WritePolicyTest {
     @Test
     fun `lowercase header is accepted`() {
         assertEquals(WriteDecision.Allow, WritePolicy.evaluate(bodyWrite.copy(header = "0x750"), WriteConditions()))
+    }
+
+    @Test
+    fun `a gateway write without a sub-target is refused`() {
+        // 750 covers every module behind the relay, so "body ECU" alone means
+        // whichever one the gateway happens to pick.
+        assertEquals(RefusalRule.UNRECOGNISED_TARGET, rule(bodyWrite.copy(sub = null)))
+    }
+
+    @Test
+    fun `a gateway write to another sub-target is refused`() {
+        assertEquals(RefusalRule.UNRECOGNISED_TARGET, rule(bodyWrite.copy(sub = 0x0F)))
+        assertEquals(RefusalRule.UNRECOGNISED_TARGET, rule(bodyWrite.copy(sub = 0xEC)))
+    }
+
+    @Test
+    fun `a directly addressed block takes no sub-target`() {
+        assertEquals(
+            RefusalRule.UNRECOGNISED_TARGET,
+            rule(bodyWrite.copy(header = "7C0", lid = 0x21, sub = 0x40)),
+        )
     }
 
     @Test
@@ -229,7 +251,7 @@ class WritePolicyTest {
 
     @Test
     fun `console allows reads and adapter identity`() {
-        listOf("0100", "0904", "2114", "221627", "ATI", "ATDPN", "ATRV", "3E80", "1003")
+        listOf("0100", "0904", "2114", "221627", "ATI", "ATDPN", "ATRV", "3E80", "1902", "1A90")
             .forEach { cmd ->
                 assertEquals(
                     "$cmd refused",
@@ -247,6 +269,37 @@ class WritePolicyTest {
         // ATDP reads the protocol: shares a prefix with ATD, must stay.
         assertEquals(null, WritePolicy.consoleRefusal(null, "ATDP"))
         assertEquals(null, WritePolicy.consoleRefusal(null, "ATDPN"))
+    }
+
+    @Test
+    fun `console refuses a write behind a gateway sub-target`() {
+        // First byte is the sub-target, not the service: reading it as a
+        // service number is how this used to slip through.
+        assertTrue(WritePolicy.consoleRefusal("750", "40053B142700") != null)
+        assertEquals(null, WritePolicy.consoleRefusal("750", "40022114"))
+        assertTrue(WritePolicy.consoleRefusal("750", "40022E1234") != null)
+        assertTrue(WritePolicy.consoleRefusal("750", "4002850000") != null)
+    }
+
+    @Test
+    fun `console refuses spaced AT commands like their compact forms`() {
+        assertTrue(WritePolicy.consoleRefusal(null, "AT Z") != null)
+        assertTrue(WritePolicy.consoleRefusal(null, "AT SP 0") != null)
+        assertTrue(WritePolicy.consoleRefusal(null, "AT WS") != null)
+        assertEquals(null, WritePolicy.consoleRefusal(null, "AT I"))
+    }
+
+    @Test
+    fun `console refuses adapter-memory writes`() {
+        assertTrue(WritePolicy.consoleRefusal(null, "AT PP 04 SV 15") != null)
+        assertTrue(WritePolicy.consoleRefusal(null, "AT@3") != null)
+    }
+
+    @Test
+    fun `console refuses state-changing services beyond the obvious one`() {
+        listOf("14", "11", "27 05", "8502", "04").forEach { cmd ->
+            assertTrue("$cmd went out", WritePolicy.consoleRefusal("7C0", cmd) != null)
+        }
     }
 
     @Test

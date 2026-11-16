@@ -38,6 +38,12 @@ data class WriteTarget(
     val byteIndex: Int,
     val before: String,
     val after: String,
+    /**
+     * Gateway sub-target. 0x750 is a relay, so a write there must say which
+     * module it is for — 0x40 is Main Body. Must be null elsewhere: the meter
+     * and A/C amplifier are addressed directly and have no sub-target.
+     */
+    val sub: Int? = null,
 )
 
 /**
@@ -75,8 +81,17 @@ sealed interface WriteDecision {
 
 object WritePolicy {
 
-    /** Writable blocks: body, combination meter, A/C amplifier. Nothing else. */
+    /**
+     * Writable blocks: body (through the gateway), meter, A/C amplifier.
+     * Nothing else. A header alone is not enough for 750 — see [GATEWAY_SUB].
+     */
     val ALLOWED_HEADERS = setOf("750", "7C0", "7C4")
+
+    /** The gateway relay: writable only with a named sub-target. */
+    const val GATEWAY_HEADER = "750"
+
+    /** Main Body behind that gateway. The only sub-target a write may name. */
+    const val MAIN_BODY_SUB = 0x40
 
     /** Customization local identifiers observed on this ECU generation. */
     val ALLOWED_LIDS = 0x01..0x3F
@@ -98,6 +113,25 @@ object WritePolicy {
                 "Refused: this block is not a customization block.",
                 "$header / $lidHex is not one of ${ALLOWED_HEADERS.joinToString()}. " +
                     "Safety, immobiliser and powertrain blocks are refused by not being on the allowlist.",
+            )
+        }
+        // 1b. 0x750 covers every module behind the gateway. A write has to
+        //     name its sub-target, or "body ECU" means whichever module the
+        //     relay happens to pick — or none at all.
+        if (header == GATEWAY_HEADER) {
+            if (target.sub != MAIN_BODY_SUB) {
+                return refuse(
+                    RefusalRule.UNRECOGNISED_TARGET,
+                    "Refused: a gateway write must name its sub-target.",
+                    "$header/$lidHex reached the gateway without a sub-target; only " +
+                        "0x%02X (Main Body) is writable behind it.".format(MAIN_BODY_SUB),
+                )
+            }
+        } else if (target.sub != null) {
+            return refuse(
+                RefusalRule.UNRECOGNISED_TARGET,
+                "Refused: this block is addressed directly and takes no sub-target.",
+                "$header/$lidHex was given sub-target 0x%02X.".format(target.sub),
             )
         }
 
@@ -217,9 +251,32 @@ object WritePolicy {
     private fun refuse(rule: RefusalRule, message: String, detail: String) =
         WriteDecision.Refuse(rule, message, detail)
 
-    /** Services that write to the truck. The console may never send these. */
-    private val CONSOLE_REFUSED_SERVICES = mapOf(
+    /**
+     * The only services the console may send, by name.
+     *
+     * An allowlist, not a blocklist: 14 clears codes in its UDS form, 11
+     * resets an ECU, 27 is security access and 85 is control-DTC, and a
+     * blocklist that misses one of them writes to somebody's truck.
+     */
+    val CONSOLE_ALLOWED_SERVICES = setOf(
+        "01", // current data
+        "03", // stored trouble codes
+        "07", // pending trouble codes
+        "09", // vehicle information (VIN, calibration ID)
+        "0A", // permanent trouble codes
+        "19", // UDS read DTC information
+        "1A", // UDS read data by identifier
+        "21", // Toyota read by local identifier
+        "22", // read data by identifier
+        "3E", // tester present
+    )
+
+    /** Names for the services people actually try, so the refusal explains itself. */
+    private val SERVICE_NAMES = mapOf(
         "04" to "clearing diagnostic codes",
+        "11" to "resetting an ECU",
+        "14" to "clearing diagnostic information",
+        "27" to "security access",
         "2E" to "writing a data identifier",
         "2F" to "controlling an input/output",
         "31" to "running a routine",
@@ -230,21 +287,29 @@ object WritePolicy {
         "38" to "transferring a file",
         "3B" to "writing a customization block",
         "3D" to "writing a data identifier",
+        "85" to "controlling DTC setting",
     )
 
     /** AT commands that reset or re-protocol the adapter mid-session. */
     private val CONSOLE_REFUSED_AT = setOf("Z", "WS", "D", "SP", "PC")
 
+    /** AT prefixes that write the adapter's own memory, outliving the session. */
+    private val CONSOLE_REFUSED_AT_PREFIX = listOf("PP", "@")
+
     /**
      * Gate for the diagnostics console's free-text header/command. Returns the
      * refusal to show, or null when the command may go out.
      *
-     * This is how "never writes" is enforced rather than promised: write
-     * services are refused under any header, adapter resets are refused
-     * because they desync the session, and embedded line breaks are refused
-     * because they would smuggle a second command past the ELM. Other AT
-     * commands are adapter-local — they cannot write the truck — so reads
-     * like ATI and ATRV stay available for diagnosis.
+     * This is how "never writes" is enforced rather than promised. Only read
+     * services are allowed, checked *after* any gateway sub-target is
+     * stripped: "40 05 3B …" is a write to Main Body, and reading its first
+     * byte as a service number would have called it harmless.
+     *
+     * Adapter resets and re-protocol commands are refused because they desync
+     * the session; AT PP and AT @ write the adapter's own memory, which
+     * outlives the session; embedded line breaks are refused because they
+     * would smuggle a second command past the ELM. Spaces are stripped before
+     * any of that, because the adapter treats "AT Z" and "ATZ" identically.
      */
     fun consoleRefusal(header: String?, command: String): String? {
         val cmd = command.trim().uppercase()
@@ -257,12 +322,17 @@ object WritePolicy {
             return "Refused: \"$h\" is not an 11-bit header (up to 4 hex digits)."
         }
         if (cmd.startsWith("AT")) {
-            val word = cmd.removePrefix("AT").split(Regex("\\s+")).firstOrNull().orEmpty()
+            val compact = cmd.filterNot { it.isWhitespace() }
+            val word = compact.removePrefix("AT")
             val resets = CONSOLE_REFUSED_AT.any { at ->
                 word == at || (word.startsWith(at) && word.drop(at.length).all { it.isDigit() })
             }
             if (resets) {
                 return "Refused: $word resets or reprotocols the adapter mid-session — reconnect from the dashboard instead."
+            }
+            val persistent = CONSOLE_REFUSED_AT_PREFIX.firstOrNull { word.startsWith(it) }
+            if (persistent != null) {
+                return "Refused: $word writes the adapter's own memory and outlives this session."
             }
             return null
         }
@@ -272,11 +342,34 @@ object WritePolicy {
         ) {
             return "Refused: not a hex command or AT command."
         }
-        val what = CONSOLE_REFUSED_SERVICES[hex.substring(0, 2)]
-        if (what != null) {
-            return "Refused: service ${hex.substring(0, 2)} ($what) writes to the truck — " +
-                "this app never sends it, including from the console."
+        val service = serviceOf(hex)
+        if (service !in CONSOLE_ALLOWED_SERVICES) {
+            val what = SERVICE_NAMES[service]
+            return "Refused: service $service" +
+                (what?.let { " ($it)" } ?: "") +
+                " is not a read — the console only sends " +
+                CONSOLE_ALLOWED_SERVICES.joinToString("/") + "."
         }
         return null
+    }
+
+    /**
+     * The service byte of a request, skipping a gateway sub-target.
+     *
+     * A gateway request is "<sub> <ISO-TP PCI> <service> …" — three bytes
+     * before the service — so "40022114" is a read of LID 0x14 at Main Body.
+     * Anything that does not parse as that shape keeps its first byte as the
+     * service, which fails closed.
+     */
+    private fun serviceOf(hex: String): String {
+        val direct = hex.substring(0, 2)
+        if (direct in CONSOLE_ALLOWED_SERVICES) return direct
+        if (hex.length >= 6) {
+            val pci = hex.substring(2, 4).toIntOrNull(16)
+            if (pci != null && pci ushr 4 == 0 && (pci and 0x0F) == (hex.length - 4) / 2) {
+                return hex.substring(4, 6)
+            }
+        }
+        return direct
     }
 }

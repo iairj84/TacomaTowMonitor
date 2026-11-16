@@ -268,6 +268,10 @@ class ObdRepository(
         // flight plus a fresh pick left two sessions fighting over one dongle.
         try { client?.close() } catch (_: Exception) { }
         client = null
+        // A new session may be a different truck, or the same one after a
+        // battery pull. Reusing the last detection's definitions would poll
+        // DIDs this vehicle may not publish, so detection runs again.
+        resetDetection()
         oilMisses = 0
         // Remembered so a dropped link can be rebuilt without the driver
         // touching anything — including after a stop, which is when a BLE
@@ -542,17 +546,31 @@ class ObdRepository(
             val session = ask(null, "1003", 2_500)
             val trans = ask("701", "221627", 4_000)
             // Gateway-routed: bare "21 14" to 750 names no sub-target and is
-            // never answered. Frame it for Main Body at 0x40 instead.
-            val body = ask("750", CustomizeExplorer.probeCommand(CustomizeExplorer.TARGETS[0], 0x14), 3_000)
+            // never answered. Ask Main Body at 0x40, with the adapter framing
+            // the sub-target itself.
+            val body = withContext(Dispatchers.IO) {
+                try {
+                    c.readGatewayLid(Elm327Client.MAIN_BODY_SUB, 0x14, 3_000)
+                } catch (_: Exception) {
+                    null
+                } finally {
+                    try { c.endGateway() } catch (_: Exception) { }
+                }
+            }
             // Ask the baseline again AFTER the manufacturer probes. Some clones
             // wedge on mode 21/22 and stop answering anything for a few seconds,
             // which made this check blame the connection. Comparing before and
             // after proves it.
             val baselineAfter = ask(null, "0100", 4_000)
             val firmware = AdapterFirmware.classify(identity, description)
-            return AdapterCheck.evaluate(
+            val report = AdapterCheck.evaluate(
                 identity, protocol, baseline, session, trans, body, baselineAfter,
             ).copy(firmware = firmware)
+            // How the gateway probe was framed, when it needed framing: a
+            // clone that refuses CEA or AT TA answers nothing, and the verdict
+            // above would blame the truck for it.
+            val framingNotes = c.gatewayReport()
+            return if (framingNotes.isEmpty()) report else report.copy(steps = report.steps + framingNotes)
         } finally {
             if (_state.value.connected) startPoll(c)
         }
@@ -757,22 +775,49 @@ class ObdRepository(
                 if (target.sub != null && sessionedSubs.add(target.header + "/" + target.sub)) {
                     withContext(Dispatchers.IO) {
                         try {
-                            c.readRaw(target.header, CustomizeExplorer.sessionCommand(target), 2_000)
+                            c.enterGatewaySession(target.sub)
                         } catch (_: Exception) {
                         }
                     }
                 }
                 if (System.currentTimeMillis() - lastKeepAlive > 4_000) {
+                    // Keep the session alive on the module being swept: a
+                    // broadcast ping would not refresh a 750/40 session, and
+                    // the header flip it caused cost two 250 ms waits.
                     withContext(Dispatchers.IO) {
-                        try { c.sendTesterPresent() } catch (_: Exception) { }
+                        try {
+                            c.sendTesterPresent(target.header, target.sub)
+                        } catch (_: Exception) {
+                        }
                     }
                     lastKeepAlive = System.currentTimeMillis()
                 }
-                val cmd = CustomizeExplorer.probeCommand(target, lid)
-                val raw = withContext(Dispatchers.IO) {
-                    try { c.readRaw(target.header, cmd, timeout) } catch (_: Exception) { null }
+                // Leaving the gateway must drop its framing: with extended
+                // addressing still on, every later 7C0 request would carry a
+                // 0x40 that module never asked for, and its replies would be
+                // filtered out. A no-op when nothing is framed.
+                if (target.sub == null) {
+                    withContext(Dispatchers.IO) {
+                        try { c.endGateway() } catch (_: Exception) { }
+                    }
                 }
-                val payload = raw?.let { c.payloadFor(cmd, it) }
+                // Gateway reads are framed by the adapter (AT CEA), so the
+                // command stays a plain KWP read. Prefixing the sub-target by
+                // hand made the ELM prepend its own length byte, and the
+                // gateway saw sub-target 0x04.
+                val readCommand = CustomizeExplorer.readCommand(lid)
+                val raw = withContext(Dispatchers.IO) {
+                    try {
+                        if (target.sub != null) {
+                            c.readGatewayLid(target.sub, lid, timeout)
+                        } else {
+                            c.readRaw(target.header, readCommand, timeout)
+                        }
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+                val payload = raw?.let { c.payloadFor(readCommand, it) }
                 out += LidReading(
                     header = target.header,
                     ecuLabel = target.label,
@@ -784,12 +829,31 @@ class ObdRepository(
                 delay(pacing)
             }
         } finally {
+            // Record what the gateway negotiated: a clone that refuses CEA
+            // or AT TA answers nothing, which reads as "no settings here".
+            val framingNotes = c.gatewayReport()
+            if (framingNotes.isNotEmpty()) {
+                _state.update {
+                    it.copy(diagnostics = (it.diagnostics + framingNotes).takeLast(400))
+                }
+            }
             withContext(Dispatchers.IO) {
+                // Hand the adapter back before the poll loop resumes: gateway
+                // framing changes the header, formatting and flow control.
+                try { c.endGateway() } catch (_: Exception) { }
                 try { c.setResponseTimeout(null) } catch (_: Exception) { }
             }
             if (_state.value.connected) startPoll(c)
         }
         return out
+    }
+
+    /** Forget the detected transmission DIDs — they belong to one session. */
+    private fun resetDetection() {
+        transDetected = false
+        panDef = TacomaPids.TRANS_PAN
+        convDef = TacomaPids.TRANS_CONVERTER
+        detectLog.clear()
     }
 
     private fun startPoll(c: Elm327Client) {
@@ -905,7 +969,11 @@ class ObdRepository(
                 appendLog(out, volts)
                 delay(if (gentle) 1_500 else 800)
             }
-            _state.update { it.copy(connected = false) }
+            // Reached only when the loop stops. A cancel — the sweep, the
+            // console or the adapter check taking the adapter — is not a lost
+            // session, and marking it disconnected used to blank the gauges
+            // and hide the connect button for a link that was never gone.
+            if (!c.isConnected()) _state.update { it.copy(connected = false) }
         }
     }
 
@@ -977,6 +1045,7 @@ class ObdRepository(
         reconnectJob?.cancel()
         reconnectJob = null
         stopPoll()
+        resetDetection()
         try { client?.close() } catch (_: Exception) {}
         client = null
         _state.update {

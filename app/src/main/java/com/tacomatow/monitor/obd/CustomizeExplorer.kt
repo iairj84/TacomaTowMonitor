@@ -41,22 +41,13 @@ object CustomizeExplorer {
 
     val totalProbes: Int get() = TARGETS.size * LID_RANGE.count()
 
-    fun readCommand(lid: Int): String = "21" + "%02X".format(lid)
-
     /**
-     * Bytes to send for one probe. Gateway targets are prefixed with the
-     * sub-target and a single-frame length covering only the bytes after it:
-     * LID 0x14 at Main Body goes out as "40 02 21 14". Replies arrive on
-     * 0x758 and are stripped back by [IsoTp].
+     * The read itself. The sub-target is framing, not payload: putting it in
+     * the command text makes the adapter prepend its own length byte, and the
+     * gateway reads the result as sub-target 0x04. [Elm327Client] asks the
+     * adapter to frame it instead (AT CEA), so this stays a plain KWP read.
      */
-    fun probeCommand(target: Target, lid: Int): String {
-        val read = readCommand(lid)
-        return if (target.sub != null) "%02X02%s".format(target.sub, read) else read
-    }
-
-    /** Extended-session request framed for the target (gateway included). */
-    fun sessionCommand(target: Target): String =
-        if (target.sub != null) "%02X021003".format(target.sub) else "1003"
+    fun readCommand(lid: Int): String = "21" + "%02X".format(lid)
 
     fun hex(bytes: ByteArray?): String? =
         bytes?.joinToString(" ") { "%02X".format(it) }

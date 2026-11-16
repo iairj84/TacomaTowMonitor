@@ -217,19 +217,23 @@ does not. Everything before it is preparation; everything after it is exposure.
 
 ---
 
-## 8. Diagnostics console: the gate that already exists (v0.9.0)
+## 8. Diagnostics console: the gate that already exists (v0.9.1)
 
 The raw console takes free-text header and command, so "never writes" has to
-be enforced, not promised. `WritePolicy.consoleRefusal` refuses, with the
-refusal shown as the reply:
+be enforced, not promised. `WritePolicy.consoleRefusal` is an **allowlist of
+read services** — 01, 03, 07, 09, 0A, 19, 1A, 21, 22, 3E — not a blocklist. A
+blocklist has to be complete to be safe, and this one was not: 14 (clear
+codes, UDS form), 11 (ECU reset), 27 (security access) and 85 (DTC control)
+all passed, as did `AT PP … SV` and `AT @3`, which write the adapter's own
+memory and outlive the session.
 
-- any service that writes to the truck, under any header: 04 (clear codes),
-  2E/3B/3D (write identifiers), 2F (I/O control), 31 (routines), 34–38
-  (upload/download/transfer)
-- AT commands that reset or re-protocol the adapter mid-session (Z, WS, D,
-  SP, PC) — they would desync the session the poll loop relies on
-- embedded line breaks, which would smuggle a second command past the ELM
-- malformed headers or non-hex commands
+The service is checked **after any gateway sub-target is stripped**. A gateway
+request is `<sub> <PCI> <service> …`, so `40 05 3B 14 27` is a write to Main
+Body; reading its first byte as a service number made it look harmless.
 
-Other AT commands are adapter-local and cannot write the truck, so reads like
-ATI and ATRV stay available for diagnosis.
+Also refused: AT commands that reset or re-protocol the adapter mid-session
+(Z, WS, D, SP, PC), with spaces stripped first so `AT Z` is treated like
+`ATZ`; embedded line breaks, which would smuggle a second command past the
+ELM; and malformed headers or non-hex commands. Other AT commands are
+adapter-local and cannot write the truck, so reads like ATI and ATRV stay
+available for diagnosis.

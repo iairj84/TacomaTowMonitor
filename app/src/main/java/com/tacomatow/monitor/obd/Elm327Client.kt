@@ -6,7 +6,7 @@ package com.tacomatow.monitor.obd
  * never on main.
  *
  * Init is deliberately TOLERANT: a quiet reply to a cosmetic command
- * (ATE0/ATS0) must not abort the whole connection, and cheap BLE clones
+ * (ATE0/ATS1) must not abort the whole connection, and cheap BLE clones
  * routinely need several seconds before their first answer after power-up.
  * The session only fails if the adapter never says anything at all.
  */
@@ -28,6 +28,30 @@ class Elm327Client(
          * broadcast addressing.
          */
         private const val UNKNOWN_HEADER = "\u0000"
+
+        /** The Toyota gateway's request ID. Reply ID is 0x758. */
+        const val GATEWAY_HEADER = "750"
+
+        /** ISO 15765-2 sub-target for Main Body behind that gateway. */
+        const val MAIN_BODY_SUB = 0x40
+    }
+
+    /** Which framing the gateway last negotiated. */
+    @Volatile private var gatewayFraming = GatewayFraming.NONE
+    @Volatile private var gatewaySub: Int? = null
+    private val gatewayNotes = mutableListOf<String>()
+
+    /**
+     * What the gateway setup actually negotiated, for the adapter log.
+     *
+     * Worth recording because the failure is silent: a clone that refuses
+     * CEA, or accepts it but refuses AT TA, answers nothing at all — which
+     * looks exactly like a module with no settings to read.
+     */
+    fun gatewayReport(): List<String> = synchronized(gatewayNotes) { gatewayNotes.toList() }
+
+    private fun noteGateway(line: String) = synchronized(gatewayNotes) {
+        if (gatewayNotes.size < 10) gatewayNotes.add(line)
     }
     @Volatile private var transportOpened = false
     @Volatile private var identityOk = false
@@ -63,7 +87,10 @@ class Elm327Client(
         // Cosmetic setup: never fatal if a clone ignores one of these.
         transport.transact("ATE0", 2_000)
         transport.transact("ATL0", 2_000)
-        transport.transact("ATS0", 2_000)
+        // Spaces between bytes: a first frame and its consecutive frames are
+        // always printed on different lines, and only spaced output lets them
+        // be joined back into one message.
+        transport.transact("ATS1", 2_000)
         transport.transact("ATH1", 2_000)
         // Pin CAN 11-bit/500k — the 3rd-gen Tacoma bus. With auto protocol
         // (ATSP0) these clones silently return NO DATA for the 0x701 header
@@ -215,16 +242,141 @@ class Elm327Client(
     }
 
     /**
-     * TesterPresent with response suppression, for long sweeps. The extended
-     * session lapses after a few idle seconds; a sweep that never says hello
-     * loses it halfway through. Suppressed (0x80) so ECUs stay silent — the
-     * ELM just waits out its own short internal timeout. Best effort.
+     * How gateway traffic is framed through the adapter.
+     *
+     * 0x750 is a gateway, not an ECU: every frame carries the downstream
+     * module's sub-target as an ISO 15765-2 extended address, and replies
+     * arrive on 0x758 with the same byte. Framing it by hand does not work —
+     * with CAN auto-formatting on, the ELM prepends its own length byte, so
+     * "40 02 21 14" leaves as "04 40 02 21 14" and the gateway reads
+     * sub-target 0x04. The adapter has to insert it (AT CEA hh).
      */
-    fun sendTesterPresent() {
+    enum class GatewayFraming {
+        NONE,
+
+        /** The adapter adds the sub-target itself (AT CEA). Preferred. */
+        ADAPTER_EXTENDED,
+
+        /** No CEA on this firmware: formatting off, sub-target prefixed by hand. */
+        MANUAL,
+    }
+
+    /**
+     * Start routing through the gateway at [sub]. Idempotent per sub-target,
+     * so a sweep pays the setup once.
+     *
+     * Order matters: CEA tells the adapter to insert the byte on transmit,
+     * but reception is filtered by the *tester address* (AT TA, default F1),
+     * so a 758/40 reply is dropped as "not for us" until TA matches. Flow
+     * control is declared explicitly because multi-frame replies need an FC
+     * frame that carries the same sub-target.
+     */
+    fun beginGateway(sub: Int): GatewayFraming {
+        if (!open) return GatewayFraming.NONE
+        val ae = "%02X".format(sub and 0xFF)
+        gatewayNotes.clear()
+        setHeader(GATEWAY_HEADER)
+        val ta = transport.transact("ATTA$ae", 2_000)
+        val cea = transport.transact("ATCEA$ae", 2_000)
+        if (cea != null && !cea.contains("?")) {
+            transport.transact("ATFCSH$GATEWAY_HEADER", 1_500)
+            transport.transact("ATFCSD" + ae + "300000", 1_500)
+            transport.transact("ATFCSM1", 1_500)
+            gatewayFraming = GatewayFraming.ADAPTER_EXTENDED
+            noteGateway("gateway $GATEWAY_HEADER/$ae: CEA accepted, adapter frames the sub-target")
+        } else {
+            // CEA arrived in v1.4, and plenty of clones and emulators never
+            // implemented it. Fall back to raw frames: formatting off and the
+            // length plus sub-target supplied here. Without flow control only
+            // single-frame replies survive, which covers the LID blocks.
+            transport.transact("ATCAF0", 2_000)
+            gatewayFraming = GatewayFraming.MANUAL
+            noteGateway(
+                "gateway $GATEWAY_HEADER/$ae: AT CEA refused — raw framing, " +
+                    "single-frame replies only (multi-frame blocks will look empty)",
+            )
+        }
+        if (ta == null || ta.contains("?")) {
+            noteGateway("gateway: AT TA refused — replies addressed to $ae may be filtered out")
+        }
+        transport.transact("ATCRA758", 2_000)
+        gatewaySub = sub and 0xFF
+        return gatewayFraming
+    }
+
+    /** Leave gateway framing and hand the adapter back to the poll loop. */
+    fun endGateway() {
+        val wasFramed = gatewaySub != null || gatewayFraming != GatewayFraming.NONE
+        gatewaySub = null
+        gatewayFraming = GatewayFraming.NONE
+        if (!wasFramed || !open) return
+        transport.transact("ATCEA", 1_500) // bare CEA = extended addressing off
+        transport.transact("ATTAF1", 1_500) // default tester address
+        transport.transact("ATCAF1", 1_500) // formatting back on
+        transport.transact("ATFCSM0", 1_500) // automatic flow control
+        transport.transact("ATAR", 1_500) // auto receive again (clears CRA)
+        // The header was changed behind setHeader's cache.
+        currentHeader = UNKNOWN_HEADER
+    }
+
+    /**
+     * One read through the gateway: header 750, sub-target [sub]. The command
+     * is the plain KWP read — the sub-target is framing, not payload.
+     */
+    fun readGatewayLid(sub: Int, lid: Int, timeoutMs: Int = 1_200): String? {
+        if (!open) return null
+        val framing = if (gatewaySub == (sub and 0xFF)) gatewayFraming else beginGateway(sub)
+        if (framing == GatewayFraming.NONE) return null
+        val read = "21%02X".format(lid and 0xFF)
+        val cmd = if (framing == GatewayFraming.MANUAL) {
+            "%02X02%s".format(sub and 0xFF, read)
+        } else {
+            read
+        }
+        return transport.transact(cmd, timeoutMs)
+    }
+
+    /** Extended session on the sub-target itself, through the gateway. */
+    fun enterGatewaySession(sub: Int): Boolean {
+        if (!open) return false
+        val framing = if (gatewaySub == (sub and 0xFF)) gatewayFraming else beginGateway(sub)
+        if (framing == GatewayFraming.NONE) return false
+        val cmd = if (framing == GatewayFraming.MANUAL) {
+            "%02X021003".format(sub and 0xFF)
+        } else {
+            "1003"
+        }
+        val r = transport.transact(cmd, 2_500)
+        return r != null && IsoTp.messages(r).any {
+            it.isNotEmpty() && (it[0].toInt() and 0xFF) == 0x50
+        }
+    }
+
+    /**
+     * TesterPresent with response suppression, for long sweeps. The extended
+     * session lapses after a few idle seconds, so a sweep that never says
+     * hello loses it halfway through. Sent on the header the sweep is using —
+     * through the gateway when [sub] is given, so the sub-target's session is
+     * actually refreshed — and with no header change, so it costs no flips.
+     * Suppressed (0x80) so ECUs stay silent. Best effort.
+     */
+    fun sendTesterPresent(header: String? = null, sub: Int? = null) {
         if (!open) return
         try {
-            setHeader(null)
-            transport.transact("3E80", 600)
+            if (sub != null) {
+                val framing =
+                    if (gatewaySub == (sub and 0xFF)) gatewayFraming else beginGateway(sub)
+                if (framing == GatewayFraming.NONE) return
+                val cmd = if (framing == GatewayFraming.MANUAL) {
+                    "%02X023E80".format(sub and 0xFF)
+                } else {
+                    "3E80"
+                }
+                transport.transact(cmd, 600)
+            } else {
+                setHeader(header)
+                transport.transact("3E80", 600)
+            }
         } catch (_: Exception) {
         }
     }
