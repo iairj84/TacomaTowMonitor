@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -837,7 +838,11 @@ class ObdRepository(
                     it.copy(diagnostics = (it.diagnostics + framingNotes).takeLast(400))
                 }
             }
-            withContext(Dispatchers.IO) {
+            // NonCancellable: leaving the screen cancels this coroutine, and a
+            // plain withContext would throw instead of running — leaving the
+            // adapter on CAF0/CEA with a 758 receive filter, which breaks every
+            // later request with no trace of why.
+            withContext(NonCancellable + Dispatchers.IO) {
                 // Hand the adapter back before the poll loop resumes: gateway
                 // framing changes the header, formatting and flow control.
                 try { c.endGateway() } catch (_: Exception) { }
@@ -877,6 +882,7 @@ class ObdRepository(
             val refusalMap = mutableMapOf<String, String>()
             var lastRedetect = System.currentTimeMillis()
             var asleepNoted = false
+            var notedSetup = 0
             while (isActive && c.isConnected()) {
                 // Nothing on the powertrain bus? The truck is probably asleep,
                 // which is what a session opened before the key went on looks
@@ -919,9 +925,13 @@ class ObdRepository(
                             else if (def.id == "trans_conv") "T-Conv Out"
                             else def.label
                             refusalMap[def.id] = "$label — $neg"
-                            // A refusal is a property of the calibration: it will
-                            // not change on the next sweep, so stop spending time on it.
-                            parkedUntil[def.id] = now0 + 600_000
+                            // A refusal is usually a property of the calibration,
+                            // so stop spending time on it — but not for mode 01,
+                            // where "7F 01 11" means the request reached the
+                            // wrong address rather than that the truck lacks the
+                            // PID. Parking that for ten minutes blanks four
+                            // gauges over an adapter hiccup.
+                            if (def.mode != "01") parkedUntil[def.id] = now0 + 600_000
                         }
                     }
                     if (v == null && attempt.definitiveMiss) {
@@ -931,6 +941,10 @@ class ObdRepository(
                     } else if (v != null) {
                         misses[def.id] = 0
                         parkedUntil.remove(def.id)
+                        // The PID answered, so whatever refusal was shown is
+                        // no longer true. Without this the card keeps listing
+                        // a gauge that has been reading fine for minutes.
+                        refusalMap.remove(def.id)
                     }
                     val now = System.currentTimeMillis()
                     if (v != null) lastGood[def.id] = v to now
@@ -957,6 +971,16 @@ class ObdRepository(
                     }
                 }
                 if (anyPower) asleepNoted = false
+                // Surface a refused header: without it the log shows four
+                // gauges "refused by the ECU" and no reason why.
+                val setup = c.setupReport()
+                if (setup.size > notedSetup) {
+                    val fresh = setup.drop(notedSetup)
+                    notedSetup = setup.size
+                    _state.update { s ->
+                        s.copy(diagnostics = (s.diagnostics + fresh).takeLast(400))
+                    }
+                }
                 _state.update {
                     it.copy(
                         readings = out,

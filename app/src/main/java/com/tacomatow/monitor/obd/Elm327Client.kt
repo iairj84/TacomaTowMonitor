@@ -50,6 +50,15 @@ class Elm327Client(
      */
     fun gatewayReport(): List<String> = synchronized(gatewayNotes) { gatewayNotes.toList() }
 
+    private val setupNotes = mutableListOf<String>()
+
+    /** Session setup problems worth showing — a refused header, mostly. */
+    fun setupReport(): List<String> = synchronized(setupNotes) { setupNotes.toList() }
+
+    private fun noteSetup(line: String) = synchronized(setupNotes) {
+        if (setupNotes.size < 12) setupNotes.add(line)
+    }
+
     private fun noteGateway(line: String) = synchronized(gatewayNotes) {
         if (gatewayNotes.size < 10) gatewayNotes.add(line)
     }
@@ -185,7 +194,18 @@ class Elm327Client(
                 val value = bytes?.let { TacomaPids.decode(def, it) }
                 if (value != null) return PidAttempt(value, false)
                 val refused = negativeResponse(raw)
-                if (refused != null) return PidAttempt(null, true, refused)
+                if (refused != null) {
+                    // Mode 01 is a functional service: an ECM answers
+                    // "7F 01 11" when that request arrives at a physical
+                    // address instead. Before calling it a refusal, put the
+                    // header out again and ask once more.
+                    if (attempt == 0) {
+                        reassertHeader(def.header)
+                        Thread.sleep(120)
+                        return@repeat
+                    }
+                    return PidAttempt(null, true, refused)
+                }
                 if (noData) return PidAttempt(null, true)
             }
             if (attempt == 0) Thread.sleep(120)
@@ -481,15 +501,44 @@ class Elm327Client(
 
     private fun setHeader(header: String?) {
         if (header == currentHeader) return
-        if (header == null) {
-            transport.transact("AT SH 7DF", 1_500)
-        } else {
-            transport.transact("AT SH $header", 1_500)
+        // The adapter can swallow an AT SH: it has just aborted a command
+        // ("STOPPED") or its buffer is still draining, and the acknowledge
+        // never arrives. Recording the header as set in that case is how
+        // every later request goes out under the old one — mode 01 sent to
+        // 701 comes back as "7F 01 11", four gauges blank, and the header
+        // cache insists it is already 7DF so nothing ever corrects it.
+        var ok = writeHeader(header)
+        if (!ok) {
+            Thread.sleep(120)
+            ok = writeHeader(header)
         }
-        currentHeader = header
+        if (!ok) {
+            // Say it out loud: the next request goes out under whatever
+            // address the adapter still holds, and a mode 01 read there
+            // answers "7F 01 11", which reads like the truck refusing.
+            noteSetup(
+                "header: the adapter did not accept AT SH ${header ?: "7DF"} — " +
+                    "requests may go out under the previous address",
+            )
+        }
+        currentHeader = if (ok) header else UNKNOWN_HEADER
         // BLE clones need a beat to settle after an address change; reading
         // immediately returns a shifted/empty frame.
         Thread.sleep(250)
+    }
+
+    /** True only when the adapter acknowledged the address change. */
+    private fun writeHeader(header: String?): Boolean {
+        val cmd = if (header == null) "AT SH 7DF" else "AT SH $header"
+        val r = transport.transact(cmd, 3_000) ?: return false
+        val t = r.uppercase()
+        return !t.contains("?") && !t.contains("STOPPED") && !t.contains("ERROR")
+    }
+
+    /** Force the header out again, even if the cache says it is already set. */
+    fun reassertHeader(header: String?) {
+        currentHeader = UNKNOWN_HEADER
+        setHeader(header)
     }
 
     /**

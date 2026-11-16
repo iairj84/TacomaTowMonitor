@@ -106,6 +106,66 @@ class Elm327ClientTest {
     }
 
     @Test
+    fun `a swallowed header change is retried`() {
+        // The adapter can drop an AT SH right after aborting a command
+        // ("STOPPED"). Caching it as set anyway is how mode 01 ends up going
+        // to 701 and every gauge reads "7F 01 11".
+        val sent = mutableListOf<String>()
+        var swallow = 1
+        val c = Elm327Client(object : ElmTransport {
+            override fun open(): Boolean = true
+            override fun transact(cmd: String, timeoutMs: Int): String? {
+                sent += cmd
+                if (cmd.startsWith("AT SH") && swallow > 0) {
+                    swallow--
+                    return null
+                }
+                return when {
+                    cmd == "ATI" -> "ELM327 v1.5"
+                    cmd.startsWith("AT") || cmd.isEmpty() -> "OK"
+                    else -> null
+                }
+            }
+            override fun close() {}
+            override fun transcript(): List<String> = emptyList()
+        })
+        c.connect()
+        c.readRaw("701", "221627")
+        assertEquals(2, sent.count { it == "AT SH 701" })
+    }
+
+    @Test
+    fun `a mode 01 refusal re-asserts the header and asks again`() {
+        val sent = mutableListOf<String>()
+        var first = true
+        val c = Elm327Client(object : ElmTransport {
+            override fun open(): Boolean = true
+            override fun transact(cmd: String, timeoutMs: Int): String? {
+                sent += cmd
+                return when {
+                    cmd == "0105" -> if (first) {
+                        first = false
+                        "7E8 03 7F 01 11"
+                    } else {
+                        "7E8 03 41 05 7B"
+                    }
+                    cmd == "ATI" -> "ELM327 v1.5"
+                    cmd.startsWith("AT") || cmd.isEmpty() -> "OK"
+                    else -> null
+                }
+            }
+            override fun close() {}
+            override fun transcript(): List<String> = emptyList()
+        })
+        c.connect()
+        sent.clear()
+        val attempt = c.readPidAttempt(TacomaPids.COOLANT)
+        assertNull(attempt.refusal)
+        assertTrue(attempt.value != null)
+        assertTrue("header not re-sent; sent=$sent", sent.count { it.startsWith("AT SH") } >= 1)
+    }
+
+    @Test
     fun `keep-alive through the gateway keeps the header`() {
         val sent = mutableListOf<String>()
         val c = recordingClient(sent, ceaReply = "OK")
