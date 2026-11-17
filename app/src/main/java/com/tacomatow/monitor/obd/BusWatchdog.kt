@@ -47,6 +47,13 @@ object BusWatchdog {
 
         /** Both resets were spent. Say so once, then stop. */
         GIVE_UP,
+
+        /**
+         * The adapter stopped answering AT commands during a reset, so no
+         * further reset is possible — a different fact from spent resets, and
+         * it must not be reported as one.
+         */
+        ADAPTER_GONE,
     }
 
     /**
@@ -72,7 +79,7 @@ object BusWatchdog {
         if (paused || handoffArmed) return Action.NONE
         if (giveUpHandled) return Action.NONE
         if (now - lastDataAt < SILENCE_MS) return Action.NONE
-        if (adapterSilent) return Action.GIVE_UP
+        if (adapterSilent) return Action.ADAPTER_GONE
         if (resets >= MAX_RESETS) return Action.GIVE_UP
         if (resets > 0 && now - lastAttemptAt < BACKOFF_MS) return Action.NONE
         if (volts != null && volts < ENGINE_OFF_MAX_V) return Action.WAIT_ENGINE_OFF

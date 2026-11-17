@@ -102,10 +102,12 @@ class BusWatchdogTest {
     }
 
     @Test
-    fun `an adapter that stopped talking AT gets no more resets`() {
+    fun `an adapter that stopped talking AT is not a spent reset ladder`() {
+        // The log used to say two resets had failed even here. Only one had
+        // been sent, and the reason it stopped is different.
         assertEquals(
-            Action.GIVE_UP,
-            decide(lastDataAt = 1_000_000L - 60_000L, adapterSilent = true),
+            Action.ADAPTER_GONE,
+            decide(lastDataAt = 1_000_000L - 60_000L, resets = 1, adapterSilent = true),
         )
     }
 

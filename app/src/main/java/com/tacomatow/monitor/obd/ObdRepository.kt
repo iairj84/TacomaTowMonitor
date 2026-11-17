@@ -707,6 +707,62 @@ class ObdRepository(
     }
 
     /**
+     * Mode 02 freeze frames: the conditions recorded when a code set.
+     *
+     * Read-only, and read-only by construction — SAE J1979 has no write in
+     * mode 02, and nothing here can clear the frame or the code. Frame 00 is
+     * the emissions snapshot every OBD-II vehicle keeps; frames 01 and 02 are
+     * optional per-code records that most ECUs decline, so they are probed
+     * and skipped rather than assumed.
+     *
+     * The supported-PID bitmap decides which values are asked for, so a truck
+     * that publishes six of them costs six reads instead of fifteen.
+     */
+    suspend fun readFreezeFrame(): FreezeFrame.Report {
+        val c = client ?: return FreezeFrame.Report(note = "Not connected.")
+        takeAdapter()
+        return try {
+            withContext(Dispatchers.IO) {
+                suspend fun ask(command: String, ms: Int): String? =
+                    try { c.readRaw(null, command, ms) } catch (_: Exception) { null }
+
+                val bitmap = FreezeFrame.supported(
+                    FreezeFrame.data(ask(FreezeFrame.request(0x00, 0), 3_000), 0x00, 0),
+                )
+                // PID 02 names the code each frame was recorded for, so a frame
+                // with no code is not reported as an empty snapshot.
+                val recorded = FreezeFrame.FRAMES.mapNotNull { frame ->
+                    FreezeFrame.dtc(ask(FreezeFrame.request(0x02, frame), 3_000), frame)
+                        ?.let { frame to it }
+                }
+                if (recorded.isEmpty()) {
+                    return@withContext FreezeFrame.Report(
+                        note = if (bitmap != null) {
+                            "This ECU answers mode 02 but has recorded no frame — no stored code " +
+                                "has set one."
+                        } else {
+                            "No answer to mode 02. That is the ECU not supporting it, or the bus " +
+                                "being asleep (ignition off). Pending codes carry no frame of their own."
+                        },
+                    )
+                }
+                val snapshots = recorded.map { (frame, code) ->
+                    val readings = FreezeFrame.WATCH
+                        .filter { bitmap == null || it in bitmap }
+                        .mapNotNull { pid ->
+                            val raw = ask(FreezeFrame.request(pid, frame), 2_000)
+                            FreezeFrame.reading(pid, FreezeFrame.data(raw, pid, frame))
+                        }
+                    FreezeFrame.Snapshot(frame = frame, dtc = code, readings = readings)
+                }
+                FreezeFrame.Report(snapshots = snapshots)
+            }
+        } finally {
+            if (_state.value.connected) startPoll(c)
+        }
+    }
+
+    /**
      * Best-effort calibration identifier (mode 09 PID 04).
      *
      * Stamped on every recorded mapping so an import can be checked against
@@ -1067,11 +1123,11 @@ class ObdRepository(
                                 )
 
                                 Elm327Client.BusRecovery.ADAPTER_DEAD -> {
+                                    // No line here: [BusWatchdog.Action.ADAPTER_GONE]
+                                    // reports this on the next pass, where the
+                                    // actual reason (and the one thing left to
+                                    // try) is known.
                                     adapterSilent = true
-                                    note(
-                                        "adapter: stopped answering even AT commands during the " +
-                                            "reset — the link is up but the adapter is not",
-                                    )
                                 }
 
                                 Elm327Client.BusRecovery.NOT_CONNECTED -> busGivenUp = true
@@ -1085,6 +1141,15 @@ class ObdRepository(
                             note(
                                 "adapter: two in-session resets did not bring the bus back — if the " +
                                     "gauges stay blank, unplug the dongle once and reconnect",
+                            )
+                        }
+
+                        BusWatchdog.Action.ADAPTER_GONE -> {
+                            busGivenUp = true
+                            note(
+                                "adapter: it stopped answering AT commands too, so no in-session " +
+                                    "reset is left — reconnect, and reseat the dongle once if that " +
+                                    "does not bring it back",
                             )
                         }
                     }

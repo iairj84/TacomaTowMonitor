@@ -47,6 +47,7 @@ import com.tacomatow.monitor.obd.DidSweep
 import com.tacomatow.monitor.obd.DidVerdict
 import com.tacomatow.monitor.obd.DtcDescriptions
 import com.tacomatow.monitor.obd.DtcReport
+import com.tacomatow.monitor.obd.FreezeFrame
 import com.tacomatow.monitor.obd.ObdHolder
 import com.tacomatow.monitor.ui.TacomaTheme
 import kotlinx.coroutines.launch
@@ -80,6 +81,8 @@ private fun DiagnosticsScreen(onBack: () -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var dtc by remember { mutableStateOf<DtcReport?>(null) }
     var dtcBusy by remember { mutableStateOf(false) }
+    var frame by remember { mutableStateOf<FreezeFrame.Report?>(null) }
+    var frameBusy by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         Row(
@@ -115,8 +118,9 @@ private fun DiagnosticsScreen(onBack: () -> Unit) {
                     Spacer(Modifier.height(6.dp))
                     Text(
                         "Reads the check-engine light plus stored (03), pending (07) and " +
-                            "permanent (0A) codes. Read-only: clearing codes writes to the " +
-                            "truck, so that button does not exist here.",
+                            "permanent (0A) codes, and the freeze frame (02) those codes " +
+                            "recorded. Read-only: clearing codes writes to the truck, so " +
+                            "that button does not exist here.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -165,16 +169,34 @@ private fun DiagnosticsScreen(onBack: () -> Unit) {
                             }
                             Spacer(Modifier.height(10.dp))
                         }
-                        Button(
-                            onClick = {
-                                dtcBusy = true
-                                scope.launch {
-                                    dtc = ObdHolder.repository.readTroubleCodes()
-                                    dtcBusy = false
-                                }
-                            },
-                            enabled = state.connected && !dtcBusy,
-                        ) { Text(if (dtcBusy) "Reading…" else if (dtc == null) "Read codes" else "Re-read") }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    dtcBusy = true
+                                    scope.launch {
+                                        dtc = ObdHolder.repository.readTroubleCodes()
+                                        dtcBusy = false
+                                    }
+                                },
+                                enabled = state.connected && !dtcBusy,
+                            ) { Text(if (dtcBusy) "Reading…" else if (dtc == null) "Read codes" else "Re-read") }
+                            Button(
+                                onClick = {
+                                    frameBusy = true
+                                    scope.launch {
+                                        frame = ObdHolder.repository.readFreezeFrame()
+                                        frameBusy = false
+                                    }
+                                },
+                                enabled = state.connected && !frameBusy,
+                            ) {
+                                Text(
+                                    if (frameBusy) "Reading…"
+                                    else if (frame == null) "Freeze frame" else "Re-read frame",
+                                )
+                            }
+                        }
+                        frame?.let { report -> FrameGroup(report, dtc) }
                     }
                 }
             }
@@ -419,6 +441,92 @@ private fun DidSweepCard() {
                 )
             }
         }
+    }
+}
+
+/**
+ * The recorded conditions, one block per frame. The code is tagged stored or
+ * pending against the scan already on screen: an ECU that keeps a frame per
+ * code is the only way a pending code has one at all.
+ */
+@Composable
+private fun FrameGroup(report: FreezeFrame.Report, codes: DtcReport?) {
+    Spacer(Modifier.height(12.dp))
+    Text("Freeze frame", style = MaterialTheme.typography.titleSmall)
+    Text(
+        "What the truck was doing when the code set — recorded by the ECU itself, read with " +
+            "mode 02. Read-only.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    if (report.isEmpty) {
+        Spacer(Modifier.height(6.dp))
+        Text(
+            report.note ?: "No frame stored.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        return
+    }
+    // A pending code only has a frame where the ECU keeps one per code. Say so
+    // rather than leaving the gap to be inferred from the list above.
+    val unframed = codes?.pending.orEmpty()
+        .filter { p -> report.snapshots.none { it.dtc == p } }
+    if (unframed.isNotEmpty()) {
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Pending ${unframed.joinToString(", ")} has no recorded frame — most ECUs keep a " +
+                "frame only for the code that set it.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    report.snapshots.forEach { snap ->
+        Spacer(Modifier.height(8.dp))
+        val code = snap.dtc
+        val tag = when {
+            code == null -> "no code recorded"
+            codes?.confirmed?.contains(code) == true -> "$code · stored"
+            codes?.pending?.contains(code) == true -> "$code · pending"
+            else -> code
+        }
+        Text(
+            "Frame ${snap.frame} — $tag",
+            style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+        )
+        code?.let {
+            Text(
+                DtcDescriptions.describe(it)
+                    ?: "Manufacturer-specific — check a Toyota reference, not a generic list.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 8.dp, bottom = 2.dp),
+            )
+        }
+        if (snap.readings.isEmpty()) {
+            Text(
+                "The ECU named this frame's code but answered none of its values.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        snap.readings.forEach { r ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(r.label, style = MaterialTheme.typography.bodySmall)
+                Text(
+                    r.text,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                )
+            }
+        }
+    }
+    report.note?.let {
+        Spacer(Modifier.height(6.dp))
+        Text(
+            it,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
