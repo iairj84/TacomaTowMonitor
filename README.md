@@ -1,4 +1,4 @@
-# Tacoma Tow Monitor — 2019 Tacoma + ELM327 + Android Auto (read-only)
+# Tacoma Tow Monitor — 2019 Tacoma + ELM327 + Android Auto (read-only today)
 
 Phone dashboard + trip logger for towing with your 2019 Tacoma V6 (A/T),
 built around the same Toyota-enhanced PIDs Torque Pro users rely on —
@@ -147,9 +147,12 @@ Tow safe. Watch the pan on long grades — that A/T will thank you.
 
 On launch the app asks GitHub for the latest release of this repository and, if
 the tag is newer than the installed `versionName`, shows an **UPDATE AVAILABLE**
-card with a Download button. The APK is fetched into the app cache and handed to
-the system installer via a `FileProvider` scoped to `cache/updates/` only; the
-first install from the app needs "install unknown apps" allowed for this app.
+card with a Download button. The APK is fetched into the app cache, its SHA-256
+is checked against the hash published in the release notes, and only a match is
+handed to the system installer via a `FileProvider` scoped to `cache/updates/`
+only; the first install from the app needs "install unknown apps" allowed for
+this app. A release with no hash in its notes, or bytes that do not match the
+hash, is deleted and never offered for install.
 
 This reads the public GitHub API, so **the repository has to be public** for the
 check to work. On a private repository the API answers `404` and the app says so
@@ -166,8 +169,9 @@ third-party table, database or extracted asset.
 diagnostic connector using published standards: SAE J1979 for modes 01 and 09,
 and the ISO 15765 / ISO 14229 service families for the Toyota local-identifier
 reads (`21 <LID>`) used by the customize explorer. No protection measure is
-circumvented and no system the owner does not own is accessed. The app never
-writes to the vehicle.
+circumvented and no system the owner does not own is accessed. The current
+build never writes to the vehicle; the write path is specified in
+docs/WRITE-SAFETY.md, gated by `WritePolicy`, and not yet wired to any UI.
 
 **Where mappings come from.** A block is read, the owner changes one setting
 using whatever they already have (the factory radio's own customization menu, a
@@ -264,11 +268,13 @@ stamped with year/trim/calibration, and exported as JSON. The name comes from
 your truck and your note — the app learns the bytes from the diff, never from
 a list.
 
-**Still out of scope: customization writes.** `CustomizeActivity` reads
-C-BEST blocks and never writes. That is a design decision, not a gap waiting to
-be filled: a wrong write to a body ECU can leave a truck with dead locks, no
-chime and no documented undo, and reverse-engineering the right payloads needs
-a vehicle to brick. Pull requests that add writes will be declined.
+**Customization writes: read-only today, specified for later.** `CustomizeActivity`
+reads C-BEST blocks and the current build never writes. That is a deliberate
+limit, not a gap waiting to be filled: a wrong write to a body ECU can leave a
+truck with dead locks, no chime and no documented undo. The rules a write path
+would have to satisfy are specified in docs/WRITE-SAFETY.md and enforced in
+code by `WritePolicy` (pure, tested); until a write UI is wired and reviewed,
+pull requests that add writes will be declined.
 
 **Ground rules:**
 
@@ -290,6 +296,6 @@ MIT — see [LICENSE](LICENSE). Do what you like with it, keep the notice.
 Bundled libraries are AndroidX/Compose and the Car App Library, all Apache-2.0.
 
 This project is not affiliated with Toyota, Elm Electronics or any adapter
-vendor. It reads standard and manufacturer diagnostic data and never writes
-vehicle configuration. Use at your own risk: no warranty, and no promise that a
+vendor. The current build reads standard and manufacturer diagnostic data and
+never writes vehicle configuration. Use at your own risk: no warranty, and no promise that a
 PID decodes correctly on your truck.

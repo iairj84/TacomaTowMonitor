@@ -163,7 +163,13 @@ Before the first write to a block, store:
 Rules:
 
 - A backup is **never overwritten** by a later one for the same block; keep the
-  oldest and newest with their timestamps.
+  oldest and newest with their timestamps. `CustomizeSnapshotStore` implements
+  this as two slots: the first snapshot stored is also kept as the original
+  (the restore value) and never overwritten, while every save updates the
+  latest (the value the reread-match check compares against).
+- Only blocks that answered are stored: a backup cannot hold what would not
+  read, so restore coverage equals read coverage — an unreadable block has no
+  restore path and therefore no write path.
 - A write without a parseable backup is impossible, not discouraged.
 - Restore is a normal write and passes through every rule in section 1.
 - Backups export with the mapping JSON, so a restore value outlives the phone.

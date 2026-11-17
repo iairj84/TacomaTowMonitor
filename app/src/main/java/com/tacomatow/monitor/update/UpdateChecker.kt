@@ -9,6 +9,7 @@ import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 
 data class AppRelease(
     val tag: String,
@@ -94,7 +95,24 @@ object UpdateChecker {
         }
     }
 
-    /** Downloads the APK into cache so the system installer can read it. */
+    /** SHA-256 published in the release notes, or null when the notes carry none. */
+    fun parseSha256(notes: String): String? =
+        Regex("\\b[0-9a-fA-F]{64}\\b").find(notes)?.value?.lowercase()
+
+    /** Hex SHA-256 of bytes, dependency-free via MessageDigest. */
+    fun sha256Hex(bytes: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+        return digest.joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * Downloads the APK into cache so the system installer can read it.
+     *
+     * Fail-closed: the release notes must publish the APK's SHA-256 (the
+     * release checklist writes it there) and the bytes must match it.
+     * A missing or mismatched digest deletes the file and throws — the
+     * caller surfaces the message instead of offering Install.
+     */
     suspend fun download(context: Context, release: AppRelease): File = withContext(Dispatchers.IO) {
         val dir = File(context.cacheDir, "updates").apply { mkdirs() }
         // Clear older builds so a stale APK can never be installed.
@@ -107,17 +125,45 @@ object UpdateChecker {
             setRequestProperty("User-Agent", "TacomaTowMonitor")
             instanceFollowRedirects = true
         }
+        val digest = MessageDigest.getInstance("SHA-256")
         try {
             if (conn.responseCode != 200) {
                 throw IllegalStateException("Download failed (HTTP ${conn.responseCode}).")
             }
             conn.inputStream.use { input ->
-                out.outputStream().use { output -> input.copyTo(output, 64 * 1024) }
+                out.outputStream().use { output ->
+                    val buf = ByteArray(64 * 1024)
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        digest.update(buf, 0, n)
+                        output.write(buf, 0, n)
+                    }
+                }
             }
         } finally {
             conn.disconnect()
         }
-        if (out.length() < 1024) throw IllegalStateException("Downloaded file looks empty.")
+        if (out.length() < 1024) {
+            out.delete()
+            throw IllegalStateException("Downloaded file looks empty.")
+        }
+        val expected = parseSha256(release.notes)
+        if (expected == null) {
+            out.delete()
+            throw IllegalStateException(
+                "Release v${release.version} has no SHA-256 in its notes — " +
+                    "refusing to install an unverified APK.",
+            )
+        }
+        val actual = digest.digest().joinToString("") { "%02x".format(it) }
+        if (!actual.equals(expected, ignoreCase = true)) {
+            out.delete()
+            throw IllegalStateException(
+                "APK SHA-256 mismatch — refusing to install. " +
+                    "Expected $expected, got $actual.",
+            )
+        }
         out
     }
 

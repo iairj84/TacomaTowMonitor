@@ -110,6 +110,31 @@ object WritePolicy {
      */
     val ALLOWED_LIDS = 0x01..0x3F
 
+    /**
+     * Per-header protected LIDs: writable header, forbidden function.
+     *
+     * The header allowlist is only the first gate. The function list in
+     * docs/WRITE-SAFETY.md §1 is the authority — notably, 7C0 is the
+     * combination meter (the instrument cluster), which is where odometer /
+     * mileage storage lives, and that function is never writable. An LID in
+     * this set is refused even though its header is allowed, so verifying
+     * "0x14 on 7C0 is a convenience setting" can never quietly authorize
+     * a mileage-adjacent LID on the same header. Empty today: no meter LID
+     * has been identified as mileage, and nothing is added here without a
+     * first-hand read proving what the LID holds.
+     */
+    val PROTECTED_LIDS: Map<String, Set<Int>> = mapOf(
+        "750" to emptySet(),
+        "7C0" to emptySet(),
+        "7C4" to emptySet(),
+    )
+
+    /** True when this header/LID names a protected function (e.g. odometer). */
+    fun isProtected(header: String, lid: Int): Boolean {
+        val h = header.uppercase().removePrefix("0X")
+        return PROTECTED_LIDS[h]?.contains(lid) == true
+    }
+
     const val MIN_VOLTS = 12.0f
     const val COOLDOWN_MS = 60_000L
     const val SPEED_SAMPLES_REQUIRED = 5
@@ -127,6 +152,18 @@ object WritePolicy {
                 "Refused: this block is not a customization block.",
                 "$header / $lidHex is not one of ${ALLOWED_HEADERS.joinToString()}. " +
                     "Safety, immobiliser and powertrain blocks are refused by not being on the allowlist.",
+            )
+        }
+        // 1a. Writable header, forbidden function: odometer/mileage storage
+        //     (and any future per-header exclusion) is refused even though
+        //     the header itself is allowed. See PROTECTED_LIDS above.
+        if (isProtected(header, target.lid)) {
+            return refuse(
+                RefusalRule.UNRECOGNISED_TARGET,
+                "Refused: safety system. This block holds a protected function.",
+                "$header/$lidHex is in the per-header protected set (e.g. instrument " +
+                    "cluster odometer/mileage storage): the function list is the authority, " +
+                    "not the address list.",
             )
         }
         // 1b. 0x750 covers every module behind the gateway. A write has to

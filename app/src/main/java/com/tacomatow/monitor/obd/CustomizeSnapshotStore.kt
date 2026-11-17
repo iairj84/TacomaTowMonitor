@@ -27,12 +27,15 @@ object CustomizeSnapshotStore {
     private const val KEY_AT = "at"
     private const val KEY_LABEL = "label"
     private const val KEY_BLOCKS = "blocks"
+    private const val KEY_ORIG_AT = "orig_at"
+    private const val KEY_ORIG_LABEL = "orig_label"
+    private const val KEY_ORIG_BLOCKS = "orig_blocks"
 
-    fun load(context: Context): Snapshot? {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val json = prefs.getString(KEY_BLOCKS, null) ?: return null
-        val at = prefs.getLong(KEY_AT, 0L)
-        val label = prefs.getString(KEY_LABEL, "") ?: ""
+    /** The write-path backup: oldest (restore value) + newest (reread check). */
+    data class Backup(val original: Snapshot?, val latest: Snapshot?)
+
+    private fun parseSnapshot(at: Long, label: String, json: String?): Snapshot? {
+        if (json == null) return null
         val readings = try {
             val array = JSONArray(json)
             buildList<LidReading> {
@@ -56,6 +59,36 @@ object CustomizeSnapshotStore {
         return if (readings.isEmpty()) null else Snapshot(at, readings, label)
     }
 
+    /** Newest snapshot: the baseline the diff workflow compares against. */
+    fun load(context: Context): Snapshot? = loadLatest(context)
+
+    fun loadLatest(context: Context): Snapshot? {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        return parseSnapshot(
+            prefs.getLong(KEY_AT, 0L),
+            prefs.getString(KEY_LABEL, "") ?: "",
+            prefs.getString(KEY_BLOCKS, null),
+        )
+    }
+
+    /** Oldest snapshot: the restore value. Never overwritten once stored. */
+    fun loadOriginal(context: Context): Snapshot? {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        return parseSnapshot(
+            prefs.getLong(KEY_ORIG_AT, 0L),
+            prefs.getString(KEY_ORIG_LABEL, "") ?: "",
+            prefs.getString(KEY_ORIG_BLOCKS, null),
+        )
+    }
+
+    fun loadBackup(context: Context): Backup = Backup(loadOriginal(context), loadLatest(context))
+
+    /**
+     * Stores [snapshot] as the latest; the first snapshot ever stored is
+     * also kept as the original and never overwritten by a later one.
+     * Only blocks that answered are kept: a backup cannot hold what would
+     * not read, so restore coverage equals read coverage.
+     */
     fun save(context: Context, snapshot: Snapshot) {
         val array = JSONArray()
         snapshot.readings.filter { it.supported }.forEach { r ->
@@ -67,12 +100,17 @@ object CustomizeSnapshotStore {
                     .put("p", r.payloadHex)
             )
         }
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit()
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val edit = prefs.edit()
             .putLong(KEY_AT, snapshot.at)
             .putString(KEY_LABEL, snapshot.label)
             .putString(KEY_BLOCKS, array.toString())
-            .apply()
+        if (!prefs.contains(KEY_ORIG_BLOCKS)) {
+            edit.putLong(KEY_ORIG_AT, snapshot.at)
+                .putString(KEY_ORIG_LABEL, snapshot.label)
+                .putString(KEY_ORIG_BLOCKS, array.toString())
+        }
+        edit.apply()
     }
 
     fun clear(context: Context) {

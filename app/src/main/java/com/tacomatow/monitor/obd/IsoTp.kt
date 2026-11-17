@@ -36,6 +36,8 @@ object IsoTp {
      */
     fun messages(raw: String, gatewaySub: Int? = null): List<ByteArray> {
         val upper = raw.uppercase()
+        // Payloads are hex-only, so a "?" is always the adapter reporting an
+        // error (e.g. lone "?" for an unsupported command), never data.
         if (upper.contains("NO DATA") || upper.contains("UNABLE TO CONNECT") ||
             upper.contains("ERROR") || upper.contains("STOPPED") || upper.contains("?")
         ) return emptyList()

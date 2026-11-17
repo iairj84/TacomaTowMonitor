@@ -36,6 +36,28 @@ class WritePolicyTest {
     }
 
     @Test
+    fun `every writable header has a protected-LID slot`() {
+        // The function list is the authority, not the address list: 7C0 is
+        // the combination meter (odometer lives there), so the policy keeps
+        // a per-header protected set even while it is empty.
+        WritePolicy.ALLOWED_HEADERS.forEach { h ->
+            assertTrue("no protected slot for $h", WritePolicy.PROTECTED_LIDS.containsKey(h))
+        }
+        assertTrue(WritePolicy.PROTECTED_LIDS.containsKey("7C0"))
+    }
+
+    @Test
+    fun `no meter LID is protected today, but the check runs before any allow`() {
+        assertEquals(false, WritePolicy.isProtected("7C0", 0x14))
+        assertEquals(false, WritePolicy.isProtected("7C0", 0x1E))
+        // A verified convenience setting on the meter still passes.
+        assertEquals(
+            WriteDecision.Allow,
+            WritePolicy.evaluate(bodyWrite.copy(header = "7C0", lid = 0x14, sub = null), WriteConditions()),
+        )
+    }
+
+    @Test
     fun `powertrain block is refused`() {
         assertEquals(RefusalRule.UNRECOGNISED_TARGET, rule(bodyWrite.copy(header = "7E0")))
     }

@@ -73,14 +73,28 @@ object CustomizeKnownBlocks {
         return bucket?.mapValues { it.value.toSet() } ?: emptyMap()
     }
 
-    /** Merge a sweep's answering blocks into this vehicle's shortlist. */
+    /**
+     * Merge a sweep's answering blocks into this vehicle's shortlist.
+     *
+     * A truck scanned while unnamed keeps its list under "unset"; naming
+     * the profile inherits it. The inheritance is a move, not a copy, and it
+     * happens on any record — full or shortlist — so a named profile that
+     * only ever runs shortlist scans still keeps the full list, and a second
+     * profile name cannot inherit the same stale shortlist twice.
+     */
     fun record(
         context: Context,
         profile: VehicleProfile,
         readings: List<LidReading>,
     ): Map<String, Set<Int>> {
         val all = loadAll(context)
-        val perEcu = all.getOrPut(profile.key()) { mutableMapOf() }
+        val key = profile.key()
+        if (profile.isSet && key !in all) {
+            all.remove("unset")?.let { unset ->
+                all[key] = unset.mapValues { it.value.toMutableSet() }.toMutableMap()
+            }
+        }
+        val perEcu = all.getOrPut(key) { mutableMapOf() }
         readings.filter { it.supported }.forEach { r ->
             perEcu.getOrPut(r.header) { mutableSetOf() }.add(r.lid)
         }
