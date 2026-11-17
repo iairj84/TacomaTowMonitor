@@ -203,6 +203,27 @@ class CustomizeDiffTest {
     }
 
     @Test
+    fun `spread diff still ranks the single-bit mover first`() {
+        val before = listOf(
+            reading("750", "Main body ECU", 0x14, "65"),
+            reading("7C0", "Combination meter", 0x23, "7A"),
+            reading("7C4", "A/C amplifier", 0x26, "AC"),
+        )
+        val after = listOf(
+            reading("750", "Main body ECU", 0x14, "25"),
+            reading("7C0", "Combination meter", 0x23, "95"),
+            reading("7C4", "A/C amplifier", 0x26, "D1"),
+        )
+        val diff = diffOf(before, after)
+        assertTrue(diff.hasSpread)
+        assertEquals(0x14, diff.topCandidate!!.lid)
+        assertEquals(
+            listOf(0x14, 0x26, 0x23),
+            diff.rankedChanges.map { it.lid },
+        )
+    }
+
+    @Test
     fun `survey lists header lid length and payload`() {
         val text = CustomizeExplorer.describeSurvey(
             listOf(

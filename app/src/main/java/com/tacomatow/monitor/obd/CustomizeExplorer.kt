@@ -376,10 +376,24 @@ data class SnapshotDiff(
      *
      * Empty when the diff is spread across modules, because then even a
      * single-bit move cannot be told apart from state that happened to move
-     * by one bit.
+     * by one bit. Use [rankedChanges] to still order the movers when spread.
      */
     val candidates: List<BlockChange>
         get() = if (hasSpread) emptyList() else changes.filter { it.isSingleBit }
+
+    /**
+     * Movers ordered by how much they look like one option toggle: single-bit
+     * moves first, then fewer bits, then fewer bytes. A boolean customization
+     * flips exactly one bit; a 7-bit move is doors/lights/blower state that
+     * happened to differ between the two scans.
+     */
+    val rankedChanges: List<BlockChange>
+        get() = changes.sortedWith(
+            compareBy<BlockChange>({ !it.isSingleBit }, { it.changedBitCount }, { it.byteChanges.size }, { it.header }, { it.lid }),
+        )
+
+    /** First of [rankedChanges], or null when nothing moved. */
+    val topCandidate: BlockChange? get() = rankedChanges.firstOrNull()
 }
 
 data class LidReading(
