@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -52,6 +53,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -72,6 +74,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.tacomatow.monitor.obd.GaugeReading
@@ -160,6 +163,12 @@ class MainActivity : ComponentActivity() {
         // Refreshed each time Settings opens, so it always reflects storage.
         var rememberedCh by remember { mutableStateOf<String?>(null) }
         var checkHidden by remember { mutableStateOf(prefs.getBoolean("check_hidden", false)) }
+        val appContext = LocalContext.current
+        var vehicleYear by remember { mutableStateOf(com.tacomatow.monitor.obd.VehicleProfileStore.load(appContext).year?.toString() ?: "") }
+        var vehicleTrim by remember { mutableStateOf(com.tacomatow.monitor.obd.VehicleProfileStore.load(appContext).trim) }
+        var vehicleCal by remember { mutableStateOf(com.tacomatow.monitor.obd.VehicleProfileStore.load(appContext).calibration) }
+        var readingCal by remember { mutableStateOf(false) }
+        var vehicleMsg by remember { mutableStateOf<String?>(null) }
         var monitors by remember {
             mutableStateOf(
                 MonitorOptions.map { it.first }.filter { prefs.getBoolean("mon_$it", true) }.toSet(),
@@ -444,6 +453,42 @@ class MainActivity : ComponentActivity() {
                     checkHidden = !it
                     prefs.edit().putBoolean("check_hidden", !it).apply()
                 },
+                vehicleYear = vehicleYear,
+                onVehicleYear = { t ->
+                    vehicleYear = t.filter { it.isDigit() }.take(4)
+                    val cur = com.tacomatow.monitor.obd.VehicleProfileStore.load(appContext)
+                    com.tacomatow.monitor.obd.VehicleProfileStore.save(appContext, cur.copy(year = vehicleYear.toIntOrNull()?.takeIf { it in 1980..2100 }))
+                },
+                vehicleTrim = vehicleTrim,
+                onVehicleTrim = { t ->
+                    vehicleTrim = t
+                    val cur = com.tacomatow.monitor.obd.VehicleProfileStore.load(appContext)
+                    com.tacomatow.monitor.obd.VehicleProfileStore.save(appContext, cur.copy(trim = t))
+                },
+                vehicleCal = vehicleCal,
+                onVehicleCal = { t ->
+                    vehicleCal = t
+                    val cur = com.tacomatow.monitor.obd.VehicleProfileStore.load(appContext)
+                    com.tacomatow.monitor.obd.VehicleProfileStore.save(appContext, cur.copy(calibration = t))
+                },
+                readingCal = readingCal,
+                vehicleMsg = vehicleMsg,
+                onReadCal = {
+                    readingCal = true
+                    scope.launch {
+                        val cal = ObdHolder.repository.readCalibrationId()
+                        if (cal != null) {
+                            vehicleCal = cal
+                            val cur = com.tacomatow.monitor.obd.VehicleProfileStore.load(appContext)
+                            com.tacomatow.monitor.obd.VehicleProfileStore.save(appContext, cur.copy(calibration = cal))
+                            vehicleMsg = "Calibration read from the ECU: $cal"
+                        } else {
+                            vehicleMsg = "This ECU didn't publish a CALID (09 04) - type it instead."
+                        }
+                        readingCal = false
+                    }
+                },
+                connected = state.connected,
                 onDismiss = { showSettings = false },
             )
         }
@@ -573,6 +618,7 @@ class MainActivity : ComponentActivity() {
         onTripSummary: (TripSummary?) -> Unit,
     ) {
         val scope = rememberCoroutineScope()
+        Column(Modifier.fillMaxWidth()) {
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -585,7 +631,7 @@ class MainActivity : ComponentActivity() {
             ) {
                 Icon(Icons.Filled.Sync, contentDescription = null, Modifier.size(18.dp))
                 Spacer(Modifier.size(8.dp))
-                Text("Keep polling")
+                Text("Tow mode")
             }
             FilledTonalButton(
                 onClick = {
@@ -615,6 +661,13 @@ class MainActivity : ComponentActivity() {
                 Spacer(Modifier.size(8.dp))
                 Text(if (state.logging) "Stop log" else "Log trip")
             }
+        }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                if (state.connected) "Tow mode is on — temps and alarms keep running with the screen off." else "Tow mode turns on when you connect — temps and alarms keep running with the screen off.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 
@@ -1035,6 +1088,16 @@ class MainActivity : ComponentActivity() {
         onShowCheck: (Boolean) -> Unit,
         rememberedLabel: String?,
         onForgetChannel: () -> Unit,
+        vehicleYear: String,
+        onVehicleYear: (String) -> Unit,
+        vehicleTrim: String,
+        onVehicleTrim: (String) -> Unit,
+        vehicleCal: String,
+        onVehicleCal: (String) -> Unit,
+        readingCal: Boolean,
+        vehicleMsg: String?,
+        onReadCal: () -> Unit,
+        connected: Boolean,
         onDismiss: () -> Unit,
     ) {
         AlertDialog(
@@ -1103,6 +1166,58 @@ class MainActivity : ComponentActivity() {
                             Spacer(Modifier.width(12.dp))
                             OutlinedButton(onClick = onForgetChannel) { Text("Forget") }
                         }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "VEHICLE",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Stamped on every recorded change so an import can be checked against this truck.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = vehicleYear,
+                            onValueChange = onVehicleYear,
+                            label = { Text("Year") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        OutlinedTextField(
+                            value = vehicleTrim,
+                            onValueChange = onVehicleTrim,
+                            label = { Text("Trim") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1.4f),
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = vehicleCal,
+                            onValueChange = onVehicleCal,
+                            label = { Text("Calibration ID") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = onReadCal, enabled = connected && !readingCal) {
+                            Text(if (readingCal) "Reading..." else "Read")
+                        }
+                    }
+                    vehicleMsg?.let {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             },

@@ -82,7 +82,7 @@ Android Studio is at `C:/dev/android-studio`.
 3. `Run ▶` the `app` config on your phone. Tap **Connect ELM327**,
    pick the paired dongle. First sweep takes ~5 s (header flips to `701`).
 4. No adapter handy? Tap **Demo** — simulated tow climb to learn the UI.
-5. **Keep alive** starts the foreground service (screen-off polling);
+5. **Tow mode** keeps temps and alarms on with the screen off (foreground service);
    **Log tow trip** writes `files/tow-logs/tacoma-tow-<stamp>.csv`.
 
 If the app was NOT built on this machine yet there is no APK checked in —
@@ -259,14 +259,16 @@ that begins mid-poll will fail on its first entry rather than mislead anyone.
 the transcript that shows the shape; a reply reconstructed from memory is how
 the same bug gets fixed twice.
 
-**What the Customize explorer does now.** It reads C-BEST blocks, snapshots the
-answer, and diffs a later sweep against that snapshot — so changing one setting
-on the factory radio (or with any dealer tool) reveals the block, byte and bit
-that moved, plus the original value to put it back. Changes are named with a
-free-text note of what was changed, given a from/to value, saved as records
-stamped with year/trim/calibration, and exported as JSON. The name comes from
-your truck and your note — the app learns the bytes from the diff, never from
-a list.
+**What the Customize explorer does now.** Three steps, top to bottom. Step 1
+scans the C-BEST blocks (full scan once, re-scan after that). Step 2 learns
+noise once: three scans with nothing changing, so bits that move on their own
+are ignored from then on. Step 3 maps a setting: type what you are changing,
+save a snapshot, change that ONE setting on the factory radio, then Scan for
+change — the name you typed and the block/byte/bit that moved show in a result
+box below, with the original value to put it back. Changes are saved as records
+stamped with the truck in Settings (year/trim/calibration — set it there, not
+on this screen) and exported as JSON. The name comes from your truck and your
+note — the app learns the bytes from the diff, never from a list.
 
 **Customization writes: read-only today, specified for later.** `CustomizeActivity`
 reads C-BEST blocks and the current build never writes. That is a deliberate

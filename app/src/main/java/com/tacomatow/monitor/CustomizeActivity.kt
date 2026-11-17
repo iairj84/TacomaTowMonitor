@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -54,7 +53,6 @@ import androidx.core.content.FileProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -71,7 +69,6 @@ import com.tacomatow.monitor.obd.CustomizeSnapshotStore
 import com.tacomatow.monitor.obd.LidReading
 import com.tacomatow.monitor.obd.ObdHolder
 import com.tacomatow.monitor.obd.SnapshotDiff
-import com.tacomatow.monitor.obd.VehicleProfile
 import com.tacomatow.monitor.obd.VehicleProfileStore
 import com.tacomatow.monitor.ui.TacomaTheme
 import kotlinx.coroutines.launch
@@ -157,21 +154,10 @@ private fun CustomizeScreen(onBack: () -> Unit) {
         }
     }
 
-    val storedProfile = remember { VehicleProfileStore.load(context) }
-    var yearText by remember { mutableStateOf(storedProfile.year?.toString() ?: "") }
-    var trimText by remember { mutableStateOf(storedProfile.trim) }
-    var calibrationText by remember { mutableStateOf(storedProfile.calibration) }
-    var readingCal by remember { mutableStateOf(false) }
-
-    fun profile() = VehicleProfile(
-        year = yearText.toIntOrNull()?.takeIf { it in 1980..2100 },
-        trim = trimText.trim(),
-        calibration = calibrationText.trim(),
-    )
-
-    fun persistProfile() = VehicleProfileStore.save(context, profile())
-
-    val currentProfile = profile()
+    // Truck identity lives in Settings now. Reload it whenever this screen
+    // returns to the front, so a change made in Settings applies here.
+    var currentProfile by remember { mutableStateOf(VehicleProfileStore.load(context)) }
+    fun profile() = currentProfile
 
     val importLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -405,8 +391,11 @@ private fun CustomizeScreen(onBack: () -> Unit) {
     val handoffOwner = LocalLifecycleOwner.current
     DisposableEffect(handoffOwner) {
         val obs = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_START && ObdHolder.repository.isHandoffArmed()) {
-                returnFromHandoff()
+            if (event == Lifecycle.Event.ON_START) {
+                currentProfile = VehicleProfileStore.load(context)
+                if (ObdHolder.repository.isHandoffArmed()) {
+                    returnFromHandoff()
+                }
             }
         }
         handoffOwner.lifecycle.addObserver(obs)
@@ -492,6 +481,17 @@ private fun CustomizeScreen(onBack: () -> Unit) {
 
             item {
                 Column {
+                    Text(
+                        "STEP 1 — FIND BLOCKS",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Text(
+                        if (knownBlocks.isEmpty()) "First visit: run the full scan once." else "Truck known — a re-scan is enough.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(6.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Button(
                             onClick = { runScan(false) },
@@ -550,6 +550,17 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(Modifier.height(8.dp))
+                    Text(
+                        "STEP 2 — LEARN NOISE (ONCE)",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Text(
+                        "Do this once with nothing changing. Bits that move on their own get ignored from now on.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(6.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         OutlinedButton(
                             onClick = { runNoiseLearn() },
@@ -581,74 +592,27 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                 }
             }
 
-                        item {
-                Column {
-                    Text(
-                        "THIS VEHICLE",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedTextField(
-                            value = yearText,
-                            onValueChange = { t ->
-                                yearText = t.filter { it.isDigit() }.take(4)
-                                persistProfile()
-                            },
-                            label = { Text("Year") },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.weight(1f),
-                        )
-                        Spacer(Modifier.size(8.dp))
-                        OutlinedTextField(
-                            value = trimText,
-                            onValueChange = { t -> trimText = t; persistProfile() },
-                            label = { Text("Trim") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1.4f),
-                        )
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedTextField(
-                            value = calibrationText,
-                            onValueChange = { t -> calibrationText = t; persistProfile() },
-                            label = { Text("Calibration ID") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f),
-                        )
-                        TextButton(
-                            onClick = {
-                                readingCal = true
-                                scope.launch {
-                                    val cal = ObdHolder.repository.readCalibrationId()
-                                    if (cal != null) {
-                                        calibrationText = cal
-                                        persistProfile()
-                                        message = "Calibration read from the ECU: $cal"
-                                    } else {
-                                        message = "This ECU didn't publish a CALID (09 04) — type it instead."
-                                    }
-                                    readingCal = false
-                                }
-                            },
-                            enabled = state.connected && !readingCal,
-                        ) { Text(if (readingCal) "Reading…" else "Read") }
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "Stamped on every recorded change so an import can be checked against this " +
-                            "truck. Read asks the ECU for 09 04; if nothing answers, type the value.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+            item {
+                Text(
+                    "Truck: ${currentProfile.summary()} — set in Settings.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             item {
                 Column {
+                    Text(
+                        "STEP 3 — NAME IT, CHANGE IT, SCAN IT",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Text(
+                        "Type the setting, save a snapshot, change that ONE setting on the radio, then scan for the change. What moved shows below.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(6.dp))
                     OutlinedTextField(
                         value = label,
                         onValueChange = { text ->
@@ -697,6 +661,13 @@ private fun CustomizeScreen(onBack: () -> Unit) {
 
                         Spacer(Modifier.size(8.dp))
 
+                        OutlinedButton(
+                            onClick = { runScan(true) },
+                            enabled = !scanning && state.connected && knownBlocks.isNotEmpty() && snapshot != null,
+                        ) { Text("Scan for change") }
+
+                        Spacer(Modifier.size(8.dp))
+
                         if (snapshot != null) {
                             TextButton(onClick = {
                                 snapshot = null
@@ -730,9 +701,15 @@ private fun CustomizeScreen(onBack: () -> Unit) {
             val snap = snapshot
             if (snap != null && results.isNotEmpty() && !scanning) {
                 item {
-                    val shown = diff ?: CustomizeExplorer.diff(emptyList(), emptyList())
-                    val shownLabel = snap.label.ifBlank { "Unnamed change" }
-                    DiffCard(
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            "YOUR CHANGE — WHAT MOVED",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        val shown = diff ?: CustomizeExplorer.diff(emptyList(), emptyList())
+                        val shownLabel = snap.label.ifBlank { "Unnamed change" }
+                        DiffCard(
                         diff = shown,
                         label = shownLabel,
                         onShare = {
@@ -784,6 +761,7 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                             }
                         },
                     )
+                    }
                 }
             }
 
