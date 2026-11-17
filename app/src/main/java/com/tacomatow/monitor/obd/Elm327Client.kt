@@ -34,10 +34,40 @@ class Elm327Client(
 
         /** ISO 15765-2 sub-target for Main Body behind that gateway. */
         const val MAIN_BODY_SUB = 0x40
+
+        /** Negative-response code: "request received, response pending". */
+        const val NRC_RESPONSE_PENDING = 0x78
+
+        /**
+         * How long to keep waiting after an ECU says "response pending".
+         *
+         * 7F <service> 78 is not a refusal: it is the ECU asking for more
+         * time, and the manufacturer services use it liberally — the gateway
+         * answers 22 F1 90 after several seconds of thinking. Toyota's own
+         * 10 03 reply advertises P2* = 5000 ms (00 32 01 F4), so that is the
+         * window worth granting before calling the block silent.
+         */
+        private const val PENDING_WINDOW_MS = 5_000
+
+        /**
+         * The adapter's own maximum response timeout, 0xFF x 4 ms ≈ 1 s.
+         * A sweeps runs at 120 ms, which expires long before a pending ECU
+         * answers — so the window has to be widened for the retry.
+         */
+        private const val PENDING_ST_UNITS = 0xFF
+
+        /** One extra grant. A second would add five more seconds per pending block. */
+        private const val MAX_PENDING_GRANTS = 1
+
+        /** Let the ECU see its next request without the aborted one still on the wire. */
+        private const val PENDING_GAP_MS = 250L
     }
 
     /** Which framing the gateway last negotiated. */
     @Volatile private var gatewayFraming = GatewayFraming.NONE
+
+    /** Adapter response timeout in force, in AT ST units of 4 ms. */
+    @Volatile private var stUnits = 0x32
     @Volatile private var gatewaySub: Int? = null
     private val gatewayNotes = mutableListOf<String>()
 
@@ -176,7 +206,7 @@ class Elm327Client(
         setHeader(def.header)
         val cmd = TacomaPids.command(def)
         repeat(2) { attempt ->
-            val raw = transport.transact(cmd, 3_500)
+            val raw = transactPending(cmd, 3_500) { transport.transact(cmd, it) }
             if (raw != null) {
                 // The adapter prints "NO DATA" with a space; collapse it
                 // before matching or unsupported PIDs are never recognised
@@ -193,7 +223,13 @@ class Elm327Client(
                 val bytes = parseResponse(cmd, raw)
                 val value = bytes?.let { TacomaPids.decode(def, it) }
                 if (value != null) return PidAttempt(value, false)
-                val refused = negativeResponse(raw)
+                if (responsePending(raw, cmd)) {
+                    // It asked for more time and the extended wait expired
+                    // too: that is silence, not a refusal. Retrying the read
+                    // would only repeat the whole five-second wait.
+                    return PidAttempt(null, true)
+                }
+                val refused = negativeResponse(raw, cmd)
                 if (refused != null) {
                     // Mode 01 is a functional service: an ECM answers
                     // "7F 01 11" when that request arrives at a physical
@@ -215,12 +251,6 @@ class Elm327Client(
 
     fun readPid(def: PidDef): Float? = readPidAttempt(def).value
 
-    /**
-     * Recognises a negative response ("7F <service> <code>") anywhere in a
-     * reply. This is the single most useful distinction in OBD debugging: a
-     * refusal proves the request arrived, whereas NO DATA only proves the
-     * adapter gave up.
-     */
     /** Adapter housekeeping rather than vehicle data. */
     fun isAdapterNoise(raw: String): Boolean {
         val t = raw.trim().uppercase()
@@ -229,17 +259,86 @@ class Elm327Client(
     }
 
     /**
-     * A negative response is a *message* starting with 0x7F, parsed through
-     * IsoTp so packed and multi-line replies count. The old scan for a bare
-     * "7F" token missed every packed refusal and could mistake a data byte
-     * for one.
+     * A negative response to *the request we sent*, "7F <service> <code>".
+     *
+     * This is the single most useful distinction in OBD debugging: a refusal
+     * proves the request arrived, whereas NO DATA only proves the adapter gave
+     * up. But only a refusal that names our own service proves anything. With
+     * headers on and a receive filter that keeps a whole module's traffic, the
+     * reply buffer routinely holds other frames — and a 7F for somebody else's
+     * request (another module refusing 22 while we asked 21) was being read as
+     * our refusal, which is a wrong answer about the truck rather than a
+     * missing one.
+     *
+     * The service byte is compared with the 0x80 bit masked: ISO 14229 ECUs
+     * echo the request byte, while some Toyota modules set the high bit. [raw]
+     * is parsed through [IsoTp] so packed and multi-frame replies count, and
+     * NRC 0x78 (response pending) is not a refusal — see [responsePending].
      */
-    fun negativeResponse(raw: String): String? {
-        val msg = IsoTp.messages(raw).firstOrNull { m ->
-            m.isNotEmpty() && (m[0].toInt() and 0xFF) == 0x7F
+    fun negativeResponse(raw: String, request: String, gatewaySub: Int? = null): String? {
+        val service = requestedService(request) ?: return null
+        val msg = IsoTp.messages(raw, gatewaySub).firstOrNull { m ->
+            m.size >= 3 && (m[0].toInt() and 0xFF) == 0x7F &&
+                (m[1].toInt() and 0x7F) == service &&
+                (m[2].toInt() and 0xFF) != NRC_RESPONSE_PENDING
         } ?: return null
-        if (msg.size < 3) return null
         return "7F %02X %02X".format(msg[1], msg[2])
+    }
+
+    /**
+     * "Request received, response pending" for our own request: 7F <service>
+     * 78. The ECU is working, not refusing, and the answer is worth waiting
+     * for — the manufacturer read services are where this shows up.
+     */
+    fun responsePending(raw: String, request: String, gatewaySub: Int? = null): Boolean {
+        val service = requestedService(request) ?: return false
+        return IsoTp.messages(raw, gatewaySub).any { m ->
+            m.size >= 3 && (m[0].toInt() and 0xFF) == 0x7F &&
+                (m[1].toInt() and 0x7F) == service &&
+                (m[2].toInt() and 0xFF) == NRC_RESPONSE_PENDING
+        }
+    }
+
+    /** First byte of a request, which is the service a refusal would name. */
+    private fun requestedService(request: String): Int? {
+        val head = request.trim().take(2)
+        if (head.length != 2) return null
+        return head.toIntOrNull(16)?.and(0x7F)
+    }
+
+    /**
+     * One command, with "response pending" honoured as a longer wait.
+     *
+     * [request] is the logical command ("2114") so the refusal and pending
+     * checks can recognise our service; [send] runs the actual exchange, which
+     * may have to be framed differently (gateway raw framing adds a length
+     * byte). Every read in the app goes through here, so a pending answer is
+     * waited out once, everywhere, instead of being reported as a refusal or a
+     * dead block.
+     */
+    private fun transactPending(
+        request: String,
+        timeoutMs: Int,
+        gatewaySub: Int? = null,
+        send: (timeoutMs: Int) -> String?,
+    ): String? {
+        var raw = send(timeoutMs)
+        var grants = 0
+        while (raw != null && grants < MAX_PENDING_GRANTS &&
+            responsePending(raw, request, gatewaySub)
+        ) {
+            grants++
+            // The adapter printed the pending frame and handed the prompt
+            // back with no data, so nothing more will arrive for this
+            // command: abort what it is still holding, widen its window to
+            // its own maximum, and ask again with the P2* window.
+            transport.transact("", 250)
+            transport.transact("ATST%02X".format(PENDING_ST_UNITS), 1_500)
+            Thread.sleep(PENDING_GAP_MS)
+            raw = send(PENDING_WINDOW_MS) ?: raw
+        }
+        if (grants > 0) transport.transact("ATST%02X".format(stUnits), 1_500)
+        return raw
     }
 
     /**
@@ -353,7 +452,9 @@ class Elm327Client(
         } else {
             read
         }
-        return transport.transact(cmd, timeoutMs)
+        return transactPending(read, timeoutMs, gatewaySub = sub and 0xFF) {
+            transport.transact(cmd, it)
+        }
     }
 
     /** Extended session on the sub-target itself, through the gateway. */
@@ -443,6 +544,7 @@ class Elm327Client(
     fun setResponseTimeout(ms: Int?) {
         if (!open) return
         val units = if (ms == null) 0x32 else (ms / 4).coerceIn(0x0A, 0xFF)
+        stUnits = units
         transport.transact("ATST" + "%02X".format(units), 2_000)
     }
 
@@ -450,7 +552,7 @@ class Elm327Client(
     fun readRaw(header: String?, command: String, timeoutMs: Int = 3_500): String? {
         if (!open) return null
         setHeader(header)
-        return transport.transact(command, timeoutMs)
+        return transactPending(command, timeoutMs) { transport.transact(command, it) }
     }
 
     /**

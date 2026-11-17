@@ -53,6 +53,23 @@ object AdapterCheck {
 
     private fun norm(raw: String?): String = raw.orEmpty().replace(" ", "").uppercase()
 
+    /**
+     * A refusal of [service] specifically.
+     *
+     * Substring tests for "7F21" / "7F22" accepted a refusal of either
+     * service for either probe, so a module refusing one request vouched for
+     * the path of another. Only the service byte we actually sent counts, and
+     * "response pending" is not a refusal at all.
+     */
+    private fun refused(raw: String?, service: Int, gatewaySub: Int? = null): Boolean {
+        if (raw == null) return false
+        return IsoTp.messages(raw, gatewaySub).any { m ->
+            m.size >= 3 && (m[0].toInt() and 0xFF) == 0x7F &&
+                (m[1].toInt() and 0x7F) == (service and 0x7F) &&
+                (m[2].toInt() and 0xFF) != Elm327Client.NRC_RESPONSE_PENDING
+        }
+    }
+
     fun evaluate(
         identity: String?,
         protocol: String?,
@@ -74,9 +91,15 @@ object AdapterCheck {
         val sessionOk = IsoTp.messages(sessionRaw.orEmpty()).any { m ->
             m.isNotEmpty() && (m[0].toInt() and 0xFF) == 0x50
         }
-        // A negative response proves the adapter delivered the request.
-        val transNegative = trans.contains("7F22") || trans.contains("7F21")
-        val bodyNegative = body.contains("7F21") || body.contains("7F22")
+        // A negative response proves the adapter delivered the request —
+        // but only one naming the service that probe sent: 22 to the
+        // transmission, 21 through the gateway.
+        val transNegative = refused(transRaw, service = 0x22)
+        val bodyNegative = refused(
+            bodyRaw,
+            service = 0x21,
+            gatewaySub = Elm327Client.MAIN_BODY_SUB,
+        )
         val transAnswered = trans.contains("6216") || trans.contains("621A")
         val bodyAnswered = body.contains("6114") || body.contains("61")
 

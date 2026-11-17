@@ -618,7 +618,10 @@ class ObdRepository(
                     null
                 }
                 val bytes = raw?.let { c.payloadFor(cmd, it) }
-                val refusal = raw?.let { c.negativeResponse(it) }
+                // Only a refusal naming 22 is ours. The buffer also holds
+                // whatever else the module said, and a 7F for another
+                // service is not this identifier's answer.
+                val refusal = raw?.let { c.negativeResponse(it, cmd) }
                 val verdict = when {
                     bytes != null -> DidVerdict.DATA
                     refusal != null -> DidVerdict.REFUSED

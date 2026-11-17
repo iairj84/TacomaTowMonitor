@@ -23,14 +23,14 @@ class Elm327ClientTest {
 
     @Test
     fun `packed refusal is detected`() {
-        assertEquals("7F 22 31", clientFor(null).negativeResponse("7E8037F2231"))
+        assertEquals("7F 22 31", clientFor(null).negativeResponse("7E8037F2231", "221627"))
     }
 
     @Test
     fun `multiline refusal is detected`() {
         assertEquals(
             "7F 22 31",
-            clientFor(null).negativeResponse("7E8 03 7F 22 31\r7E9 03 7F 22 31"),
+            clientFor(null).negativeResponse("7E8 03 7F 22 31\r7E9 03 7F 22 31", "2231"),
         )
     }
 
@@ -38,7 +38,56 @@ class Elm327ClientTest {
     fun `data byte 0x7F is not a refusal`() {
         // The old scan for a bare 7F token mistook the middle of this payload
         // for a refusal of service 0x26.
-        assertNull(clientFor(null).negativeResponse("7E8 05 61 14 7F 26 11"))
+        assertNull(clientFor(null).negativeResponse("7E8 05 61 14 7F 26 11", "2114"))
+    }
+
+    @Test
+    fun `a refusal of another service is not our refusal`() {
+        // With headers on, the buffer holds the whole module's traffic — the
+        // other frame's 7F 22 was being reported as the answer to our 21.
+        assertNull(clientFor(null).negativeResponse("7E8 03 7F 22 31", "2114"))
+        assertEquals("7F 21 31", clientFor(null).negativeResponse("7E8 03 7F 21 31", "2114"))
+    }
+
+    @Test
+    fun `response pending is not a refusal`() {
+        val c = clientFor(null)
+        assertNull("7F 21 78 must not count as refused", c.negativeResponse("7E8 03 7F 21 78", "2114"))
+        assertTrue(c.responsePending("7E8 03 7F 21 78", "2114"))
+        assertFalse("another service's pending is not ours", c.responsePending("7E8 03 7F 22 78", "2114"))
+    }
+
+    @Test
+    fun `response pending is waited out, not reported as silence`() {
+        val sent = mutableListOf<String>()
+        var asks = 0
+        val c = Elm327Client(object : ElmTransport {
+            override fun open(): Boolean = true
+            override fun transact(cmd: String, timeoutMs: Int): String? {
+                sent += "$cmd@$timeoutMs"
+                return when {
+                    cmd == "2114" -> if (asks++ == 0) {
+                        "7C0 03 7F 21 78"
+                    } else {
+                        "7C0 04 61 14 00 01"
+                    }
+                    cmd == "ATI" -> "ELM327 v1.5"
+                    cmd.startsWith("AT") || cmd.isEmpty() -> "OK"
+                    else -> null
+                }
+            }
+            override fun close() {}
+            override fun transcript(): List<String> = emptyList()
+        })
+        c.connect()
+        sent.clear()
+        val raw = c.readRaw("7C0", "2114", 900)
+        assertTrue("answer lost: $raw", raw?.replace(" ", "")?.contains("6114") == true)
+        // The retry has to outlast P2* (5 s), and the adapter's own window is
+        // widened to its maximum for it, then put back.
+        assertTrue("no wide window in $sent", sent.any { it == "2114@5000" })
+        assertTrue("adapter window not widened: $sent", sent.contains("ATSTFF@1500"))
+        assertEquals("adapter window not restored: $sent", "ATST32@1500", sent.last())
     }
 
     @Test
