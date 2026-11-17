@@ -214,6 +214,70 @@ class Elm327ClientTest {
         assertTrue("header not re-sent; sent=$sent", sent.count { it.startsWith("AT SH") } >= 1)
     }
 
+    // A dongle that answers AT commands but has stopped reaching the bus.
+    private fun wedgedClient(sent: MutableList<String>, reset: String?, probe: String?) =
+        Elm327Client(object : ElmTransport {
+            override fun open(): Boolean = true
+            override fun transact(cmd: String, timeoutMs: Int): String? {
+                sent += cmd
+                return when {
+                    cmd == "ATWS" || cmd == "ATZ" -> reset
+                    cmd == "0100" -> probe
+                    cmd == "ATI" -> "ELM327 v1.5"
+                    cmd.startsWith("AT") || cmd.isEmpty() -> "OK"
+                    else -> null
+                }
+            }
+            override fun close() {}
+            override fun transcript(): List<String> = emptyList()
+        })
+
+    @Test
+    fun `a warm start that brings the bus back counts as recovered`() {
+        val sent = mutableListOf<String>()
+        val c = wedgedClient(sent, reset = "ELM327 v1.5", probe = "7E8 06 41 00 BE 3E B8 13")
+        c.connect()
+        sent.clear()
+        assertEquals(Elm327Client.BusRecovery.RECOVERED, c.recoverBus())
+        assertTrue("AT WS not sent", sent.contains("ATWS"))
+        // A warm start restores every default, so the session has to be set up
+        // again or the next read goes out with echo and line feeds on.
+        assertTrue("echo not re-disabled: $sent", sent.contains("ATE0"))
+        assertTrue("headers not re-enabled: $sent", sent.contains("ATH1"))
+        assertTrue("protocol not re-pinned: $sent", sent.contains("ATSP6"))
+        // The header cache is cleared, so the next request re-sends its header
+        // rather than trusting state the reset threw away.
+        c.readRaw("7C0", "2114")
+        assertTrue("header cache survived the reset: $sent", sent.contains("AT SH 7C0"))
+    }
+
+    @Test
+    fun `a reset with no answer on the bus is silence, not recovery`() {
+        val sent = mutableListOf<String>()
+        val c = wedgedClient(sent, reset = "ELM327 v1.5", probe = null)
+        c.connect()
+        assertEquals(Elm327Client.BusRecovery.SILENT, c.recoverBus())
+    }
+
+    @Test
+    fun `an adapter that will not reset is reported dead`() {
+        val sent = mutableListOf<String>()
+        val c = wedgedClient(sent, reset = null, probe = null)
+        c.connect()
+        sent.clear()
+        assertEquals(Elm327Client.BusRecovery.ADAPTER_DEAD, c.recoverBus())
+        assertFalse("claimed a reset it never got", sent.contains("ATH1"))
+    }
+
+    @Test
+    fun `the second rung is a cold start`() {
+        val sent = mutableListOf<String>()
+        val c = wedgedClient(sent, reset = "ELM327 v1.5", probe = "7E8 06 41 00 BE 3E B8 13")
+        c.connect()
+        c.recoverBus(cold = true)
+        assertTrue("AT Z not sent", sent.contains("ATZ"))
+    }
+
     @Test
     fun `keep-alive through the gateway keeps the header`() {
         val sent = mutableListOf<String>()

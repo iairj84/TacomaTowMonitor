@@ -15,6 +15,13 @@ ship it by default.
 - **Tow-trip CSV logging** to app files (`tow-logs/`), one file per trip.
 - **Android Auto head-unit screen** with the same 4 temps as slow-refresh
   text rows — with honest limits (below). Full gauges stay on the phone.
+- **Self-healing bus watchdog.** A dongle that holds the link open but stops
+  answering the truck — the cheap-clone wedge, where `AT I` still replies and
+  every vehicle request returns `NO DATA` — is reset in place: a warm start
+  (`AT WS`), then a cold one (`AT Z`) if that fails, so you never walk back to
+  the OBD port to unplug it. Both are announced in the adapter log. It stands
+  down while the dongle is handed off, and it does not fire when the adapter's
+  own voltage reading says the engine is off and the ECUs are asleep.
 
 ## The PIDs (why Torque "doesn't share it")
 

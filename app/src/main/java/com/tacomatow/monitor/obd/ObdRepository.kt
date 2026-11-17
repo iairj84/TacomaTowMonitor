@@ -891,6 +891,15 @@ class ObdRepository(
             var lastRedetect = System.currentTimeMillis()
             var asleepNoted = false
             var notedSetup = 0
+            // Bus-silence watchdog. Armed when polling starts, not when data
+            // first arrives: a dongle wedged by a sweep before it ever
+            // answered would otherwise never be watched at all.
+            var lastDataAt = System.currentTimeMillis()
+            var lastBusAttemptAt = 0L
+            var busResets = 0
+            var busGivenUp = false
+            var adapterSilent = false
+            var engineOffNoted = false
             while (isActive && c.isConnected()) {
                 // Nothing on the powertrain bus? The truck is probably asleep,
                 // which is what a session opened before the key went on looks
@@ -979,6 +988,107 @@ class ObdRepository(
                     }
                 }
                 if (anyPower) asleepNoted = false
+                // A live link that stops being a live bus is a different
+                // failure from a dropped connection: the socket stays up, AT
+                // commands answer, and every vehicle request returns NO DATA
+                // until the dongle is unplugged. Reset it here instead — the
+                // owner should never have to walk back to the OBD port.
+                if (anyPower) {
+                    lastDataAt = System.currentTimeMillis()
+                    busResets = 0
+                    busGivenUp = false
+                    adapterSilent = false
+                    engineOffNoted = false
+                } else if (System.currentTimeMillis() - lastDataAt >= BusWatchdog.SILENCE_MS) {
+                    val nowSilent = System.currentTimeMillis()
+                    val silentFor = (nowSilent - lastDataAt) / 1000
+                    // ATRV comes off the adapter's own ADC, so it answers even
+                    // when the CAN side is wedged — that is what makes it
+                    // usable to tell a stuck dongle from a switched-off truck.
+                    val watchdogVolts = withContext(Dispatchers.IO) {
+                        try { c.readVoltage() } catch (_: Exception) { null }
+                    }
+                    when (BusWatchdog.decide(
+                        now = nowSilent,
+                        lastDataAt = lastDataAt,
+                        lastAttemptAt = lastBusAttemptAt,
+                        volts = watchdogVolts,
+                        resets = busResets,
+                        adapterSilent = adapterSilent,
+                        giveUpHandled = busGivenUp,
+                        paused = pollingPaused,
+                        handoffArmed = isHandoffArmed(),
+                    )) {
+                        BusWatchdog.Action.NONE -> { }
+
+                        BusWatchdog.Action.WAIT_ENGINE_OFF -> {
+                            if (!engineOffNoted) {
+                                engineOffNoted = true
+                                note(
+                                    "bus: nothing answered for $silentFor s and the adapter reads " +
+                                        "$watchdogVolts V — engine off, so silence is expected and no " +
+                                        "reset is sent",
+                                )
+                            }
+                            // Re-arm the window rather than re-test on every
+                            // pass of this loop.
+                            lastDataAt = nowSilent
+                        }
+
+                        BusWatchdog.Action.RESET_WARM, BusWatchdog.Action.RESET_COLD -> {
+                            val cold = busResets > 0
+                            val what = if (cold) "cold reset (AT Z)" else "warm start (AT WS)"
+                            lastBusAttemptAt = nowSilent
+                            busResets++
+                            note(
+                                "adapter: no vehicle data for $silentFor s while it still answers " +
+                                    "AT commands — $what in-session",
+                            )
+                            val outcome = withContext(Dispatchers.IO) {
+                                try { c.recoverBus(cold) } catch (_: Exception) { null }
+                            }
+                            when (outcome) {
+                                Elm327Client.BusRecovery.RECOVERED -> {
+                                    note(
+                                        "adapter: $what brought the bus back — polling resumed " +
+                                            "without an unplug",
+                                    )
+                                    // Everything this loop learned about these
+                                    // PIDs came from the wedged adapter.
+                                    misses.clear()
+                                    parkedUntil.clear()
+                                    refusalMap.clear()
+                                    lastDataAt = System.currentTimeMillis()
+                                }
+
+                                Elm327Client.BusRecovery.SILENT -> note(
+                                    "adapter: still no vehicle data after the $what — either the " +
+                                        "truck is off or this clone's CAN side is stuck",
+                                )
+
+                                Elm327Client.BusRecovery.ADAPTER_DEAD -> {
+                                    adapterSilent = true
+                                    note(
+                                        "adapter: stopped answering even AT commands during the " +
+                                            "reset — the link is up but the adapter is not",
+                                    )
+                                }
+
+                                Elm327Client.BusRecovery.NOT_CONNECTED -> busGivenUp = true
+
+                                null -> note("adapter: the reset did not complete — no reply")
+                            }
+                        }
+
+                        BusWatchdog.Action.GIVE_UP -> {
+                            busGivenUp = true
+                            note(
+                                "adapter: two in-session resets did not bring the bus back — if the " +
+                                    "gauges stay blank, unplug the dongle once and reconnect",
+                            )
+                        }
+                    }
+                }
                 // Surface a refused header: without it the log shows four
                 // gauges "refused by the ECU" and no reason why.
                 val setup = c.setupReport()
@@ -1172,6 +1282,11 @@ class ObdRepository(
         logFile = f
         _state.update { it.copy(logging = true) }
         return f
+    }
+
+    /** One line in the adapter log the owner can read or share. */
+    private fun note(line: String) {
+        _state.update { s -> s.copy(diagnostics = (s.diagnostics + line).takeLast(400)) }
     }
 
     private fun appendLog(readings: Map<String, GaugeReading>, volts: Float?) {

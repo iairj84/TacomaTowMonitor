@@ -438,6 +438,78 @@ class Elm327Client(
         currentHeader = UNKNOWN_HEADER
     }
 
+    /** What an in-session bus reset achieved. */
+    enum class BusRecovery {
+        /** `0100` answers again: the bus is back and polling can resume. */
+        RECOVERED,
+
+        /** The adapter reset fine but nothing on the bus answers — likely key-off. */
+        SILENT,
+
+        /** The adapter did not even answer the reset. */
+        ADAPTER_DEAD,
+
+        NOT_CONNECTED,
+    }
+
+    /**
+     * Recover an adapter that still answers AT commands but has stopped
+     * reaching the bus, without asking the owner to unplug it.
+     *
+     * A warm start drops the ELM's command state and its CAN controller — the
+     * software equivalent of pulling the dongle, and the same trick [connect]
+     * already uses after a bad previous session. It also puts every setting
+     * back to defaults, so the session is set up again here: echo, line feeds,
+     * headers and the pinned protocol all return, the header cache is cleared
+     * and any gateway framing is gone (so the next gateway read re-runs CEA
+     * instead of trusting stale state).
+     *
+     * [cold] uses AT Z instead, for a clone that survived a warm start. Both
+     * are followed by a real `0100` on the bus: an adapter that reset cleanly
+     * is not the same as a bus that answers.
+     */
+    fun recoverBus(cold: Boolean = false): BusRecovery {
+        if (!open) return BusRecovery.NOT_CONNECTED
+        // Abort whatever the ELM is still holding; any character does it.
+        transport.transact("", 300)
+        val reset = transport.transact(if (cold) "ATZ" else "ATWS", 6_000)
+        if (reset.isNullOrBlank()) return BusRecovery.ADAPTER_DEAD
+        reinitAfterReset()
+        if (baselineAnswers()) return BusRecovery.RECOVERED
+        // A clone that refused SP6 during setup was left on auto; try that
+        // before calling the bus dead.
+        transport.transact("ATSP0", 3_000)
+        protocol = "0"
+        currentHeader = UNKNOWN_HEADER
+        return if (baselineAnswers()) BusRecovery.RECOVERED else BusRecovery.SILENT
+    }
+
+    /** Setup lost to a warm/cold start, redone the way [connect] does it. */
+    private fun reinitAfterReset() {
+        transport.transact("ATE0", 1_500)
+        transport.transact("ATL0", 1_500)
+        transport.transact("ATS1", 1_500)
+        transport.transact("ATH1", 1_500)
+        transport.transact("ATSP6", 3_000)
+        protocol = "6"
+        // A reset restores the documented 200 ms response timeout and an
+        // unknown header, so the cached values would skip the setup the next
+        // read needs.
+        stUnits = 0x32
+        currentHeader = UNKNOWN_HEADER
+        gatewayFraming = GatewayFraming.NONE
+        gatewaySub = null
+        Thread.sleep(250)
+    }
+
+    /** 0100 answered with 41: the bus, not just the adapter, is alive. */
+    private fun baselineAnswers(): Boolean {
+        val probe = transport.transact("0100", 5_000) ?: return false
+        return IsoTp.messages(probe).any { m ->
+            m.isNotEmpty() && (m[0].toInt() and 0xFF) == 0x41
+        }
+    }
+
     /**
      * One read through the gateway: header 750, sub-target [sub]. The command
      * is the plain KWP read — the sub-target is framing, not payload.
