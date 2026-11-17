@@ -25,6 +25,11 @@ Decisions:
   display face, so a WARN/CRIT state is carried by the banner, pill, and
   band — not by the whole numeral changing color at a glance.
 
-Kept: charcoal/mint/amber palette, dark-first theme, all polling/logging
-logic untouched. Verified with `./gradlew assembleDebug` and
-`./gradlew testDebugUnitTest` (both pass, offline).
+Follow-up (same day, v0.9.24): the band as shipped had no marker, so it read as
+an unfilled progress bar — "196 °F" next to a mostly-green bar says nothing
+about how close that is to a limit. Added a tick at the value's position and
+replaced the evenly spaced 100 / Ease off / Stop ticks, which implied
+positions the zone edges do not have (SpaceBetween, not the real fractions),
+with one caption naming both thresholds. Verified with
+`./gradlew assembleDebug` and `./gradlew testDebugUnitTest` (both pass,
+offline).

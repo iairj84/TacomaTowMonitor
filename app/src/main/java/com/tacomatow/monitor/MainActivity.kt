@@ -16,6 +16,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -943,22 +946,15 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(4.dp))
                 ThresholdBar(value = value, warnF = warnF, critF = critF)
-                Spacer(Modifier.height(6.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("100", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(
-                        "Ease off ${"%.0f".format(warnF)}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        "Stop ${"%.0f".format(critF)}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                Spacer(Modifier.height(5.dp))
+                Text(
+                    "Mark sits where this temp is. Ease off at ${"%.0f".format(warnF)}°F, " +
+                        "stop at ${"%.0f".format(critF)}°F.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
@@ -971,19 +967,40 @@ class MainActivity : ComponentActivity() {
         val span = hi - lo
         val warnFrac = ((warnF - lo) / span).coerceIn(0f, 1f)
         val critFrac = ((critF - lo) / span).coerceIn(0f, 1f)
-        Column {
-            Box(
+        // Null value = no reading: show the empty band with no marker rather
+        // than parking a tick at zero and implying a cold transmission.
+        val valueFrac = value?.let { ((it - lo) / span).coerceIn(0f, 1f) }
+
+        BoxWithConstraints(
+            Modifier
+                .fillMaxWidth()
+                .height(16.dp),
+        ) {
+            val barWidth = maxWidth
+            // Three zones across the temperature range the gauge watches: the
+            // colour under the marker is the verdict on where it sits.
+            Row(
                 Modifier
                     .fillMaxWidth()
                     .height(8.dp)
+                    .align(Alignment.CenterStart)
                     .clip(RoundedCornerShape(50))
                     .background(palette.track),
             ) {
-                Row(Modifier.fillMaxWidth()) {
-                    Box(Modifier.weight(warnFrac).height(8.dp).background(palette.ok.copy(alpha = 0.55f)))
-                    Box(Modifier.weight((critFrac - warnFrac).coerceAtLeast(0.01f)).height(8.dp).background(palette.warn.copy(alpha = 0.75f)))
-                    Box(Modifier.weight((1f - critFrac).coerceAtLeast(0.01f)).height(8.dp).background(palette.crit.copy(alpha = 0.75f)))
-                }
+                Box(Modifier.weight(warnFrac.coerceAtLeast(0.001f)).fillMaxHeight().background(palette.ok.copy(alpha = 0.55f)))
+                Box(Modifier.weight((critFrac - warnFrac).coerceAtLeast(0.001f)).fillMaxHeight().background(palette.warn.copy(alpha = 0.8f)))
+                Box(Modifier.weight((1f - critFrac).coerceAtLeast(0.001f)).fillMaxHeight().background(palette.crit.copy(alpha = 0.8f)))
+            }
+            if (valueFrac != null) {
+                Box(
+                    Modifier
+                        .offset(x = (barWidth - 4.dp) * valueFrac)
+                        .align(Alignment.CenterStart)
+                        .width(4.dp)
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(MaterialTheme.colorScheme.onSurface),
+                )
             }
         }
     }
