@@ -168,18 +168,19 @@ class Elm327Client(
     fun identityVerified(): Boolean = identityOk
 
     /** The BLE channel this session proved — null on classic or when nothing was proven. */
-    fun confirmedBleChannel(): UartChannel? =
-        (transport as? BleTransport)?.confirmedChannel()
+    fun confirmedBleChannel(): UartChannel? = transport.confirmedChannel()
 
     /** Fires when the byte pipe drops on its own, so a session can be rebuilt. */
     fun onLinkLost(handler: () -> Unit) = transport.onLinkLost(handler)
 
-    /** Where setup got stuck. Shown in the error text. */
-    fun transportStage(): String = when (val t = transport) {
-        is BleTransport -> t.stage
-        is SppTransport -> t.stage
-        else -> ""
-    }
+    /**
+     * Where setup got stuck. Shown in the error text.
+     *
+     * Asked of the transport rather than cast: the transcript recorder wraps
+     * it, and a cast would have found neither kind and reported no stage at
+     * all — precisely when the error text needs one.
+     */
+    fun transportStage(): String = transport.setupStage()
 
     /** Setup trail for the in-app adapter log. */
     fun transcript(): List<String> = transport.transcript()

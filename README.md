@@ -226,6 +226,15 @@ connection state, protocol, adapter voltage, then the log lines verbatim. A bare
 and paste the result. Raw replies (`NO DATA`, `7F 22 31`, `SEARCHING...`) are
 the difference between a diagnosis and a guess — see "The PIDs" above for why.
 
+**For a protocol bug, send a transcript instead.** Diagnostics → **Record
+transcript** captures every command with the window it was sent with and the
+exact reply, then shares it as text. Paste it into an issue and it becomes a
+test: `app/src/test/resources/transcripts/` holds these files, and
+`ReplayTransport` feeds one back through the real client, strictly, in order.
+A bug that arrived as 'show me the reply' then stays fixed — every shape this
+project got wrong (a 9-byte block read as 4, a packed `7F` taken as ours, `78`
+ending a read) is exactly what such a file preserves.
+
 **Welcome:**
 
 - **PID definitions for other years and engines.** Include the model year, cab
@@ -235,7 +244,9 @@ the difference between a diagnosis and a guess — see "The PIDs" above for why.
 - **Adapter quirks.** If a dongle needed a different init order, a different
   write characteristic, or a protocol it refused, that is genuinely useful —
   this project exists because the descriptor tables and the marketing copy lie.
-- **Parser fixes** where a documented formula and a real reply disagree.
+- **Parser fixes** where a documented formula and a real reply disagree. Include
+the transcript that shows the shape; a reply reconstructed from memory is how
+the same bug gets fixed twice.
 
 **What the Customize explorer does now.** It reads C-BEST blocks, snapshots the
 answer, and diffs a later sweep against that snapshot — so changing one setting

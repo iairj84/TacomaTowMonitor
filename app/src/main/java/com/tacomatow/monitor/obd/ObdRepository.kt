@@ -16,6 +16,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.tacomatow.monitor.BuildConfig
 import com.tacomatow.monitor.obd.write.WritePolicy
 import java.io.File
 import java.text.SimpleDateFormat
@@ -292,7 +293,10 @@ class ObdRepository(
             var winnerKind = ""
 
             for ((kind, make) in transports) {
-                val c = Elm327Client(make())
+                // Wrapped unconditionally: recording is a flag on the sink, so
+                // the decorator costs a boolean check when it is off and the
+                // recording survives a session rebuild.
+                val c = Elm327Client(RecordingTransport(make(), transcriptLog))
                 val ok = try {
                     withContext(Dispatchers.IO) { c.connect() }
                 } catch (e: SecurityException) {
@@ -665,6 +669,39 @@ class ObdRepository(
         } finally {
             if (_state.value.connected) startPoll(c)
         }
+    }
+
+    // ---- transcript recording: bug reports and test fixtures ----
+
+    /** Outlives a session, so a reconnect stays one recording. */
+    private val transcriptLog = TranscriptRecorder()
+
+    fun isRecordingTranscript(): Boolean = transcriptLog.isRecording()
+
+    /** Begin a fresh recording, discarding anything captured before. */
+    fun startTranscript() {
+        transcriptLog.start()
+    }
+
+    /**
+     * Stop and return the file text, or null when nothing was captured.
+     *
+     * The header carries what makes a fixture judgeable later — the build that
+     * produced it, the adapter label, the protocol — and the conversation
+     * itself contains ATI, so the adapter names itself inside the file too.
+     */
+    fun stopTranscript(): String? {
+        val entries = transcriptLog.stop()
+        if (entries.isEmpty()) return null
+        val header = linkedMapOf(
+            "app" to "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+            "adapter" to (_state.value.deviceName ?: "unknown"),
+            "protocol" to (client?.activeProtocol() ?: "?"),
+            "recorded" to SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", Locale.US).format(Date()),
+            "entries" to entries.size.toString(),
+        )
+        if (transcriptLog.wasTruncated()) header["truncated"] = "true"
+        return Transcript.encode(entries, header)
     }
 
     /** Adapter identity, current protocol and bus voltage. */

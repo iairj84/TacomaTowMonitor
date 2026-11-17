@@ -1,0 +1,70 @@
+# tacoma-transcript 1
+# app: 0.9.16 (69)
+# adapter: OBDII (BLE)
+# protocol: 6
+# recorded: 2026-11-17T16:45:00Z
+# note: synthetic fixture, not a live session — reply shapes follow SAE J1979, ISO 15765-2 mixed addressing and the XA50 framing table. Replace it with a real recording when one exists; the test will replay either.
+>  @300
+<
+>  @300
+<
+>  @300
+<
+> ATWS @4000
+< ELM327 v1.5
+> ATE0 @2000
+< OK
+> ATL0 @2000
+< OK
+> ATS1 @2000
+< OK
+> ATH1 @2000
+< OK
+> ATSP6 @3000
+< OK
+> 0100 @4000
+< 7E8 06 41 00 BE 3E B8 13
+> ATI @3000
+< ELM327 v1.5
+> 0100 @4000
+< 7E8 06 41 00 BE 3E B8 13
+> AT SH 750 @3000
+< OK
+> ATTA40 @2000
+< OK
+> ATCEA40 @2000
+< OK
+> ATFCSH750 @1500
+< OK
+> ATFCSD40300000 @1500
+< OK
+> ATFCSM1 @1500
+< OK
+> ATCRA758 @2000
+< OK
+> 2114 @1200
+< 758 40 03 61 14 9A
+> 2182 @1200
+< 758 40 10 0A 61 82 A1 A2 A3 A4\r758 40 21 A5 A6 A7 A8
+> ATCEA @1500
+< OK
+> ATTAF1 @1500
+< OK
+> ATCAF1 @1500
+< OK
+> ATFCSM0 @1500
+< OK
+> ATAR @1500
+< OK
+> AT SH 7DF @3000
+< OK
+> 2114 @900
+< 7C0 03 7F 21 78
+>  @250
+<
+> ATSTFF @1500
+< OK
+> 2114 @5000
+< 7C0 04 61 14 00 01
+> ATST32 @1500
+< OK

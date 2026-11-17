@@ -74,6 +74,7 @@ class DiagnosticsActivity : ComponentActivity() {
 private fun DiagnosticsScreen(onBack: () -> Unit) {
     val state by ObdHolder.repository.state.collectAsState()
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     var header by remember { mutableStateOf("701") }
     var command by remember { mutableStateOf("221627") }
     var reply by remember { mutableStateOf<String?>(null) }
@@ -83,6 +84,7 @@ private fun DiagnosticsScreen(onBack: () -> Unit) {
     var dtcBusy by remember { mutableStateOf(false) }
     var frame by remember { mutableStateOf<FreezeFrame.Report?>(null) }
     var frameBusy by remember { mutableStateOf(false) }
+    var recording by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         Row(
@@ -184,6 +186,10 @@ private fun DiagnosticsScreen(onBack: () -> Unit) {
                                 onClick = {
                                     frameBusy = true
                                     scope.launch {
+                                        // A frame with no code list cannot say whether its
+                                        // code is stored or pending, so read the codes too
+                                        // when this button is the first thing tapped.
+                                        if (dtc == null) dtc = ObdHolder.repository.readTroubleCodes()
                                         frame = ObdHolder.repository.readFreezeFrame()
                                         frameBusy = false
                                     }
@@ -244,6 +250,41 @@ private fun DiagnosticsScreen(onBack: () -> Unit) {
                         },
                         enabled = state.connected && !busy,
                     ) { Text(if (busy) "Reading…" else "Read identity") }
+
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Transcript records every command and reply as text. It is the one thing a " +
+                            "protocol bug can never be argued with, and it replays byte for byte in a test.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    TextButton(
+                        onClick = {
+                            if (recording) {
+                                val text = ObdHolder.repository.stopTranscript()
+                                recording = false
+                                if (text != null) {
+                                    AdapterLogShare.share(
+                                        context,
+                                        text,
+                                        subject = "Tacoma Tow Monitor — transcript",
+                                    )
+                                }
+                            } else {
+                                ObdHolder.repository.startTranscript()
+                                recording = true
+                            }
+                        },
+                        enabled = state.connected || recording,
+                    ) {
+                        Text(
+                            when {
+                                recording -> "Stop and share transcript"
+                                else -> "Record transcript"
+                            },
+                        )
+                    }
                 }
             }
 

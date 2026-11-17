@@ -38,6 +38,17 @@ interface ElmTransport {
      * reconnect override this; a transport that never reports is fine too.
      */
     fun onLinkLost(handler: () -> Unit) {}
+
+    /**
+     * Where setup got stuck, when the transport tracks it. On the interface so
+     * a wrapper — the transcript recorder — can pass it through: a cast to
+     * BleTransport/SppTransport would fail on the wrapped instance and report
+     * an empty stage exactly when the error text needs it.
+     */
+    fun setupStage(): String = ""
+
+    /** The BLE channel this session proved, if any. Null on classic transport. */
+    fun confirmedChannel(): UartChannel? = null
 }
 
 /** Bluetooth Classic (SPP) transport. */
@@ -69,6 +80,8 @@ class SppTransport(
     /** Setup stage, mirrored into the adapter log / error text. */
     @Volatile var stage = "starting"
         private set
+
+    override fun setupStage(): String = stage
 
     override fun transcript(): List<String> = synchronized(log) { log.toList() }
 
@@ -252,6 +265,8 @@ class BleTransport(
     @Volatile var stage = "starting"
         private set
 
+    override fun setupStage(): String = stage
+
     private var connLatch = CountDownLatch(1)
     private var svcLatch = CountDownLatch(1)
     private var descLatch = CountDownLatch(1)
@@ -262,7 +277,7 @@ class BleTransport(
     @Volatile private var confirmed: UartChannel? = null
 
     /** The channel this session proved, for the caller to remember — or null. */
-    fun confirmedChannel(): UartChannel? = confirmed
+    override fun confirmedChannel(): UartChannel? = confirmed
 
     /** True once a link was actually up, so a close we caused is not a loss. */
     @Volatile private var hadLink = false

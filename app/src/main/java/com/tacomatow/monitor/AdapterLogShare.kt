@@ -36,13 +36,17 @@ object AdapterLogShare {
         }
     }
 
-    fun share(context: Context, text: String) {
+    fun share(
+        context: Context,
+        text: String,
+        subject: String = "Tacoma Tow Monitor — adapter log",
+    ) {
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, "Tacoma Tow Monitor — adapter log")
+            putExtra(Intent.EXTRA_SUBJECT, subject)
             putExtra(Intent.EXTRA_TEXT, text)
         }
-        context.startActivity(Intent.createChooser(send, "Share adapter log"))
+        context.startActivity(Intent.createChooser(send, subject))
     }
 
     fun copy(context: Context, text: String) {
