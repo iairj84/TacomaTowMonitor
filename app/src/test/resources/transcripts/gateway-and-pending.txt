@@ -3,7 +3,7 @@
 # adapter: OBDII (BLE)
 # protocol: 6
 # recorded: 2026-11-17T16:45:00Z
-# note: synthetic fixture, not a live session — reply shapes follow SAE J1979, ISO 15765-2 mixed addressing and the XA50 framing table. Replace it with a real recording when one exists; the test will replay either.
+# note: synthetic fixture, not a live session — reply shapes follow SAE J1979, ISO 15765-2 mixed addressing and the XA50 framing table. A real recording replays the same way once trimmed to the window the test drives (see README, Contributing).
 >  @300
 <
 >  @300

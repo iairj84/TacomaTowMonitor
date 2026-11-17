@@ -69,10 +69,13 @@ object Transcript {
                     entries += Entry(cmd, ms, null)
                 }
                 line.startsWith("<") -> {
-                    val body = line.removePrefix("<").removePrefix(" ")
-                    val reply = unescape(body).ifBlank { null }
+                    // A reply belongs to the request above it. One without a
+                    // request is a mistyped `>` in a fixture, and failing here
+                    // names the line instead of shifting every later reply.
                     val last = entries.lastOrNull()
-                    if (last != null) entries[entries.size - 1] = last.copy(reply = reply)
+                        ?: throw IllegalArgumentException("reply before any request: $line")
+                    val body = line.removePrefix("<").removePrefix(" ")
+                    entries[entries.size - 1] = last.copy(reply = unescape(body).ifBlank { null })
                 }
             }
         }

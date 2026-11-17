@@ -9,9 +9,14 @@ package com.tacomatow.monitor.obd
  * *and* the reply shapes, so a change to either is caught instead of quietly
  * producing different numbers.
  *
- * Timeouts are not compared. The client legitimately widens its window for a
- * `78` and shortens it for a sweep; the recording keeps the value it used so a
- * test can assert on it from [Transcript.Record] itself.
+ * What it does not police is case and spacing within a command. `AT SH 750`,
+ * `ATSH750` and `AT SH750` are the same request to the adapter, and a recording
+ * from the truck cannot be re-made to match a cosmetic rewrite — failing there
+ * would cost a fixture without catching anything.
+ *
+ * Timeouts are not compared either. The client legitimately widens its window
+ * for a `78` and shortens it for a sweep; the recording keeps the value it used
+ * so a test can assert on it from [Transcript.Record] itself.
  */
 class ReplayTransport(private val record: Transcript.Record) : ElmTransport {
 
@@ -26,13 +31,16 @@ class ReplayTransport(private val record: Transcript.Record) : ElmTransport {
             "transcript ran out at \"$cmd\": all ${record.entries.size} entries were replayed"
         }
         val expected = record.entries[cursor]
-        check(expected.command.equals(cmd, ignoreCase = true)) {
+        check(sameCommand(expected.command, cmd)) {
             "entry $cursor expected \"${expected.command}\" @${expected.timeoutMs} ms, " +
                 "client asked \"$cmd\" @$timeoutMs ms"
         }
         cursor++
         return expected.reply
     }
+
+    private fun sameCommand(a: String, b: String): Boolean =
+        a.filterNot { it.isWhitespace() }.equals(b.filterNot { it.isWhitespace() }, ignoreCase = true)
 
     override fun close() {}
 

@@ -51,6 +51,14 @@ class TranscriptTest {
         assertEquals(3000, parsed.entries[0].timeoutMs)
     }
 
+    @Test
+    fun `a mistyped reply line fails at the line, not as a shifted replay`() {
+        val error = runCatching {
+            Transcript.parse("# tacoma-transcript 1\n< OK\n> ATI @3000\n< ELM327 v1.5\n")
+        }.exceptionOrNull()
+        assertTrue("an orphan reply was accepted", error is IllegalArgumentException)
+    }
+
     // ---- record, then replay ----
 
     @Test
@@ -93,6 +101,14 @@ class TranscriptTest {
         )
         wrapped.transact("ATI", 1_000)
         assertTrue(recorder.stop().isEmpty())
+    }
+
+    @Test
+    fun `a respelled but identical command still replays`() {
+        val record = Transcript.parse(
+            Transcript.encode(listOf(Transcript.Entry("AT SH 750", 3000, "OK")), emptyMap()),
+        )
+        assertEquals("OK", ReplayTransport(record).transact("atsh750", 3000))
     }
 
     @Test

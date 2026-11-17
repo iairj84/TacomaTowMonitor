@@ -235,6 +235,13 @@ A bug that arrived as 'show me the reply' then stays fixed — every shape this
 project got wrong (a 9-byte block read as 4, a packed `7F` taken as ours, `78`
 ending a read) is exactly what such a file preserves.
 
+One trimming step first. A live recording is the whole session — it starts
+wherever Record was tapped, and it keeps every polling cycle after the reads
+that matter. Because replay is one ordered stream, cut it down to the window
+the test will drive: from the empty-line sync and `ATI` if the test calls
+`connect()`, or from the first `AT SH`/`ATCEA` of the target under test. A file
+that begins mid-poll will fail on its first entry rather than mislead anyone.
+
 **Welcome:**
 
 - **PID definitions for other years and engines.** Include the model year, cab

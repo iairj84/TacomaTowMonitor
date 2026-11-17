@@ -55,26 +55,16 @@ class TranscriptRecorder {
  *
  * A decorator rather than hooks in both transports: SPP and BLE then record
  * identically, and the recorder cannot drift from what the client actually
- * sent. Setup stage and the proven BLE channel are passed through, so wrapping
- * does not blind the error text or the remembered-channel optimisation.
+ * sent. Only [transact] is written by hand — `by delegate` forwards the rest,
+ * so a member added to [ElmTransport] later (the setup stage and proven BLE
+ * channel were both added after this class existed) cannot be silently dropped
+ * here and blind the error text or the remembered channel.
  */
 class RecordingTransport(
     private val delegate: ElmTransport,
     private val recorder: TranscriptRecorder,
-) : ElmTransport {
-
-    override fun open(): Boolean = delegate.open()
+) : ElmTransport by delegate {
 
     override fun transact(cmd: String, timeoutMs: Int): String? =
         delegate.transact(cmd, timeoutMs).also { recorder.record(cmd, timeoutMs, it) }
-
-    override fun close() = delegate.close()
-
-    override fun transcript(): List<String> = delegate.transcript()
-
-    override fun onLinkLost(handler: () -> Unit) = delegate.onLinkLost(handler)
-
-    override fun setupStage(): String = delegate.setupStage()
-
-    override fun confirmedChannel(): UartChannel? = delegate.confirmedChannel()
 }
