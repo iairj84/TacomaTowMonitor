@@ -249,7 +249,7 @@ object CustomizeExplorer {
         if (diff.unbaselined > 0) {
             sb.appendLine(
                 "${diff.unbaselined} answering block(s) were never probed in the baseline " +
-                    "(it covers fewer blocks) — save a fresh snapshot so they can be compared.",
+                    "(it covers fewer blocks) — tap Scan for change to save a fresh baseline so they can be compared.",
             )
             sb.appendLine()
         }

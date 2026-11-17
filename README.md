@@ -263,8 +263,8 @@ the same bug gets fixed twice.
 scans the C-BEST blocks (full scan once, re-scan after that). Step 2 learns
 noise once: three scans with nothing changing, so bits that move on their own
 are ignored from then on. Step 3 maps a setting: type what you are changing,
-save a snapshot, change that ONE setting on the factory radio, then Scan for
-change — the name you typed and the block/byte/bit that moved show in a result
+tap Scan for change to save the baseline, change that ONE setting on the factory radio, then tap Scan for
+change again — the name you typed and the block/byte/bit that moved show in a result
 box below, with the original value to put it back. Changes are saved as records
 stamped with the truck in Settings (year/trim/calibration — set it there, not
 on this screen) and exported as JSON. The name comes from your truck and your

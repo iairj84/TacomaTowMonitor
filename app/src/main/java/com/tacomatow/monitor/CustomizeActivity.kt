@@ -319,7 +319,7 @@ private fun CustomizeScreen(onBack: () -> Unit) {
         val snap = snapshot
         if (snap != null && results.isNotEmpty() && diff?.identical == false) {
             message = "This scan differs from the baseline — record the block first, " +
-                "or save a fresh snapshot, then hand off."
+                "or tap Scan for change to save a fresh baseline, then hand off."
             return
         }
         if (snap != null && results.isNotEmpty()) {
@@ -358,7 +358,7 @@ private fun CustomizeScreen(onBack: () -> Unit) {
             }
             if (snap == null || knownBlocks.isEmpty()) {
                 scanning = false
-                message = "Reconnected. Save a snapshot, then hand off to map a setting."
+                message = "Reconnected. Tap Scan for change to save the baseline, then hand off to map a setting."
                 return@handoffResume
             }
             runScan(fast = true) { found ->
@@ -608,7 +608,7 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                         color = MaterialTheme.colorScheme.primary,
                     )
                     Text(
-                        "Type the setting, save a snapshot, change that ONE setting on the radio, then scan for the change. What moved shows below.",
+                        "Type the setting, tap Scan for change to save what is on the truck now, change that ONE setting on the radio, then tap Scan for change again. What moved shows below.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -648,22 +648,25 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         OutlinedButton(
                             onClick = {
-                                val saved = CustomizeSnapshotStore.Snapshot(
-                                    at = System.currentTimeMillis(),
-                                    readings = results.toList(),
-                                    label = composedLabel(),
-                                )
-                                snapshot = saved
-                                CustomizeSnapshotStore.save(context, saved)
+                                if (snapshot == null) {
+                                    if (results.none { it.supported }) {
+                                        message = "Run Step 1 first — there is nothing to save a baseline from yet."
+                                        return@OutlinedButton
+                                    }
+                                    val saved = CustomizeSnapshotStore.Snapshot(
+                                        at = System.currentTimeMillis(),
+                                        readings = results.toList(),
+                                        label = composedLabel(),
+                                    )
+                                    snapshot = saved
+                                    CustomizeSnapshotStore.save(context, saved)
+                                    message = "Baseline saved — change that ONE setting on the radio, then tap Scan for change again."
+                                } else {
+                                    runScan(true)
+                                }
                             },
-                            enabled = !scanning && results.any { it.supported },
-                        ) { Text("Save snapshot") }
-
-                        Spacer(Modifier.size(8.dp))
-
-                        OutlinedButton(
-                            onClick = { runScan(true) },
-                            enabled = !scanning && state.connected && knownBlocks.isNotEmpty() && snapshot != null,
+                            enabled = !scanning && state.connected &&
+                                (snapshot != null && knownBlocks.isNotEmpty() || snapshot == null && results.any { it.supported }),
                         ) { Text("Scan for change") }
 
                         Spacer(Modifier.size(8.dp))
@@ -682,8 +685,8 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                     val saved = snapshot
                     Text(
                         if (saved == null) {
-                            "To map a setting: name it, save a snapshot, then change that ONE setting " +
-                                "on the factory radio (Menu → Setup → Vehicle Customization) and scan " +
+                            "To map a setting: name it, tap Scan for change to save the baseline, then change that ONE setting " +
+                                "on the factory radio (Menu → Setup → Vehicle Customization) and tap Scan for change " +
                                 "again. The block that moved is that setting."
                         } else {
                             val at = stamp.format(Date(saved.at))
@@ -995,7 +998,7 @@ private fun DiffCard(
                 Spacer(Modifier.height(10.dp))
                 Text(
                     "${diff.unbaselined} answering blocks were never probed in the baseline — " +
-                        "it covers fewer blocks than this scan. Save a fresh snapshot so they " +
+                        "it covers fewer blocks than this scan. Tap Scan for change to save a fresh baseline so they " +
                         "can be compared.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
