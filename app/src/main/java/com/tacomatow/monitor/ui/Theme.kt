@@ -105,10 +105,10 @@ private val TowTypography = Typography().let { base ->
     base.copy(
         displayLarge = TextStyle(
             fontFamily = FontFamily.SansSerif,
-            fontWeight = FontWeight.Light,
-            fontSize = 76.sp,
-            lineHeight = 78.sp,
-            letterSpacing = (-3).sp,
+            fontWeight = FontWeight.Medium,
+            fontSize = 72.sp,
+            lineHeight = 74.sp,
+            letterSpacing = (-2).sp,
         ),
         headlineMedium = TextStyle(
             fontWeight = FontWeight.SemiBold,
@@ -132,16 +132,17 @@ private val TowTypography = Typography().let { base ->
             fontSize = 14.sp,
             letterSpacing = 0.2.sp,
         ),
-        // Used for gauge captions — wide tracking reads as instrumentation.
+        // Gauge captions stay compact and quiet — sentence case in the UI,
+        // so tracking stays tight instead of shouting like instrumentation.
         labelMedium = TextStyle(
             fontWeight = FontWeight.SemiBold,
-            fontSize = 11.sp,
-            letterSpacing = 1.4.sp,
+            fontSize = 12.sp,
+            letterSpacing = 0.4.sp,
         ),
         labelSmall = TextStyle(
             fontWeight = FontWeight.Medium,
-            fontSize = 10.sp,
-            letterSpacing = 1.1.sp,
+            fontSize = 11.sp,
+            letterSpacing = 0.3.sp,
         ),
         bodySmall = TextStyle(
             fontSize = 12.sp,

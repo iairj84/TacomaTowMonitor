@@ -524,7 +524,7 @@ class MainActivity : ComponentActivity() {
         ) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    "TACOMA TOW",
+                    "Tacoma tow · 2019 V6",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary,
                 )
@@ -569,7 +569,7 @@ class MainActivity : ComponentActivity() {
             ),
         ) {
             Row(
-                Modifier.fillMaxWidth().padding(14.dp),
+                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Box(
@@ -582,14 +582,14 @@ class MainActivity : ComponentActivity() {
                 Column(Modifier.weight(1f)) {
                     Text(
                         if (state.connected) (state.deviceName ?: "Connected") else "No adapter",
-                        style = MaterialTheme.typography.titleMedium,
+                        style = MaterialTheme.typography.titleSmall,
                     )
                     Text(
                         when {
                             state.demoMode -> "Demo data — no dongle attached"
                             state.connected -> "Live from the ELM327"
                             lastName != null -> "Last used: $lastName"
-                            else -> "2019 Tacoma V6 · 3.5L"
+                            else -> "Ignition on, then connect"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -623,7 +623,7 @@ class MainActivity : ComponentActivity() {
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            FilledTonalButton(
+            OutlinedButton(
                 onClick = {
                     startForegroundService(Intent(this@MainActivity, ObdForegroundService::class.java))
                 },
@@ -633,7 +633,7 @@ class MainActivity : ComponentActivity() {
                 Spacer(Modifier.size(8.dp))
                 Text("Tow mode")
             }
-            FilledTonalButton(
+            Button(
                 onClick = {
                     if (onToggleLogging()) {
                         onTripSummary(null)
@@ -645,12 +645,12 @@ class MainActivity : ComponentActivity() {
                 },
                 modifier = Modifier.weight(1f),
                 colors = if (state.logging) {
-                    ButtonDefaults.filledTonalButtonColors(
-                        containerColor = MaterialTheme.colorScheme.errorContainer,
-                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError,
                     )
                 } else {
-                    ButtonDefaults.filledTonalButtonColors()
+                    ButtonDefaults.buttonColors()
                 },
             ) {
                 Icon(
@@ -664,7 +664,7 @@ class MainActivity : ComponentActivity() {
         }
             Spacer(Modifier.height(6.dp))
             Text(
-                if (state.connected) "Tow mode is on — temps and alarms keep running with the screen off." else "Tow mode turns on when you connect — temps and alarms keep running with the screen off.",
+                if (state.connected) "Tow mode is on — alarms keep running with the screen off." else "Tow mode starts on connect — alarms keep running with the screen off.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -708,7 +708,7 @@ class MainActivity : ComponentActivity() {
             Column(Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        "ADAPTER CHECK",
+                        "Adapter check",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f),
@@ -744,7 +744,7 @@ class MainActivity : ComponentActivity() {
                 if (report.steps.isNotEmpty()) {
                     Spacer(Modifier.height(10.dp))
                     Text(
-                        "WHAT TO DO",
+                        "What to do",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -774,7 +774,7 @@ class MainActivity : ComponentActivity() {
                 report.firmware?.let { fw ->
                     Spacer(Modifier.height(10.dp))
                     Text(
-                        "CHIP",
+                                                    "Chip",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -842,11 +842,25 @@ class MainActivity : ComponentActivity() {
     // ---------- gauges ----------
 
     private fun statusWord(status: String?): String = when (status) {
-        "CRIT" -> "STOP — COOL DOWN"
-        "WARN" -> "EASE OFF"
-        "HOLD" -> "HOLDING"
-        "NO DATA" -> "NO DATA"
-        else -> "NORMAL"
+        "CRIT" -> "Stop — cool down"
+        "WARN" -> "Ease off"
+        "HOLD" -> "Holding"
+        "NO DATA" -> "No data"
+        else -> "Normal"
+    }
+
+    private fun overallTowStatus(state: ObdUiState): Pair<String, String> {
+        val all = state.readings.values.mapNotNull { it.status }
+        val headline = when {
+            all.contains("CRIT") -> "Stop — cool down" to
+                "A temp is past its limit. Back off now, keep the engine running so the cooler keeps working."
+            all.contains("WARN") -> "Ease off" to
+                "Temps are climbing into the caution band. Drop speed, hold the gear, watch the pan."
+            state.demoMode -> "Demo pull" to "Simulated climb — no dongle attached."
+            state.connected -> "All clear — keep pulling" to "Pan and converter are inside their working bands."
+            else -> "Not connected" to "Connect with the ignition on, or preview with demo data."
+        }
+        return headline
     }
 
     /** Large transmission gauge: the number you glance at while pulling. */
@@ -856,6 +870,7 @@ class MainActivity : ComponentActivity() {
         title: String,
         warnF: Float,
         critF: Float,
+        deltaF: Float? = null,
     ) {
         val palette = LocalTowPalette.current
         val status = g?.status
@@ -876,73 +891,72 @@ class MainActivity : ComponentActivity() {
         Card(
             colors = CardDefaults.cardColors(containerColor = surface),
             modifier = Modifier.fillMaxWidth(),
-            border = androidx.compose.foundation.BorderStroke(1.dp, accent.copy(alpha = 0.25f)),
+            border = androidx.compose.foundation.BorderStroke(1.dp, accent.copy(alpha = 0.28f)),
         ) {
-            Column(Modifier.fillMaxWidth().padding(18.dp)) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        title.uppercase(),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        title,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.weight(1f),
                     )
-                    Box(
-                        Modifier
-                            .clip(RoundedCornerShape(50))
-                            .background(accent.copy(alpha = 0.16f))
-                            .padding(horizontal = 10.dp, vertical = 4.dp),
-                    ) {
+                    if (status == null || status == "WARN" || status == "CRIT") {
+                        Box(
+                            Modifier
+                                .clip(RoundedCornerShape(50))
+                                .background(accent.copy(alpha = 0.16f))
+                                .padding(horizontal = 10.dp, vertical = 4.dp),
+                        ) {
+                            Text(
+                                statusWord(status),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = accent,
+                            )
+                        }
+                    } else {
                         Text(
                             statusWord(status),
                             style = MaterialTheme.typography.labelSmall,
-                            color = accent,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
-                Spacer(Modifier.height(2.dp))
                 Row(verticalAlignment = Alignment.Bottom) {
                     Text(
                         text = value?.let { "%.0f".format(it) } ?: "—",
                         style = MaterialTheme.typography.displayLarge,
-                        color = if (value == null) palette.idle else accent,
+                        color = if (value == null) palette.idle else MaterialTheme.colorScheme.onSurface,
                     )
                     Text(
                         "°F",
                         style = MaterialTheme.typography.headlineSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(start = 8.dp, bottom = 14.dp),
+                        modifier = Modifier.padding(start = 6.dp, bottom = 12.dp),
                     )
+                    if (deltaF != null && value != null) {
+                        Text(
+                            if (deltaF >= 0) "+%.0f° over pan".format(deltaF) else "%.0f° under pan".format(deltaF),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (deltaF > 30) palette.warn else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 10.dp, bottom = 16.dp),
+                        )
+                    }
                 }
-                Spacer(Modifier.height(8.dp))
-                val span = (critF + 20f) - 100f
-                val frac = value?.let { ((it - 100f) / span).coerceIn(0f, 1f) } ?: 0f
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(10.dp)
-                        .clip(RoundedCornerShape(50))
-                        .background(palette.track),
-                ) {
-                    Box(
-                        Modifier
-                            .fillMaxWidth(frac)
-                            .height(10.dp)
-                            .clip(RoundedCornerShape(50))
-                            .background(accent),
-                    )
-                }
+                Spacer(Modifier.height(6.dp))
+                ThresholdBar(value = value, warnF = warnF, critF = critF)
                 Spacer(Modifier.height(6.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("100", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(
-                        "WARN ${"%.0f".format(warnF)}",
+                        "Ease off ${"%.0f".format(warnF)}",
                         style = MaterialTheme.typography.labelSmall,
-                        color = palette.warn,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        "CRIT ${"%.0f".format(critF)}",
+                        "Stop ${"%.0f".format(critF)}",
                         style = MaterialTheme.typography.labelSmall,
-                        color = palette.crit,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
@@ -950,44 +964,116 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun MiniGauge(g: GaugeReading, modifier: Modifier = Modifier) {
+    private fun ThresholdBar(value: Float?, warnF: Float, critF: Float) {
         val palette = LocalTowPalette.current
-        val value = g.valueF
-        val accent = when (g.status) {
-            "CRIT" -> palette.crit
-            "WARN" -> palette.warn
-            "HOLD", "NO DATA" -> palette.idle
-            else -> palette.ok
+        val lo = 100f
+        val hi = critF + 20f
+        val span = hi - lo
+        val warnFrac = ((warnF - lo) / span).coerceIn(0f, 1f)
+        val critFrac = ((critF - lo) / span).coerceIn(0f, 1f)
+        Column {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(8.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(palette.track),
+            ) {
+                Row(Modifier.fillMaxWidth()) {
+                    Box(Modifier.weight(warnFrac).height(8.dp).background(palette.ok.copy(alpha = 0.55f)))
+                    Box(Modifier.weight((critFrac - warnFrac).coerceAtLeast(0.01f)).height(8.dp).background(palette.warn.copy(alpha = 0.75f)))
+                    Box(Modifier.weight((1f - critFrac).coerceAtLeast(0.01f)).height(8.dp).background(palette.crit.copy(alpha = 0.75f)))
+                }
+            }
         }
+    }
+
+    @Composable
+    private fun TelemetryStrip(readings: List<GaugeReading>) {
+        if (readings.isEmpty()) return
+        val palette = LocalTowPalette.current
         Card(
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            modifier = modifier,
+            modifier = Modifier.fillMaxWidth(),
             border = androidx.compose.foundation.BorderStroke(
                 1.dp, MaterialTheme.colorScheme.outlineVariant,
             ),
         ) {
-            Column(Modifier.padding(14.dp)) {
+            Row(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
+                readings.forEachIndexed { index, g ->
+                    val accent = when (g.status) {
+                        "CRIT" -> palette.crit
+                        "WARN" -> palette.warn
+                        "HOLD", "NO DATA" -> palette.idle
+                        else -> MaterialTheme.colorScheme.onSurface
+                    }
+                    Column(
+                        Modifier.weight(1f).padding(horizontal = 14.dp),
+                    ) {
+                        Text(
+                            g.label,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Row(verticalAlignment = Alignment.Bottom) {
+                            Text(
+                                g.valueF?.let {
+                                    if (g.unit == "rpm") it.toInt().toString() else "%.0f".format(it)
+                                } ?: "—",
+                                style = MaterialTheme.typography.titleLarge,
+                                color = if (g.valueF == null) palette.idle else accent,
+                            )
+                            Text(
+                                " ${g.unit}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(bottom = 2.dp, start = 2.dp),
+                            )
+                        }
+                    }
+                    if (index < readings.lastIndex) {
+                        Box(
+                            Modifier
+                                .width(1.dp)
+                                .height(38.dp)
+                                .align(Alignment.CenterVertically)
+                                .background(MaterialTheme.colorScheme.outlineVariant),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun TowStatusBanner(state: ObdUiState) {
+        val palette = LocalTowPalette.current
+        val (title, subtitle) = overallTowStatus(state)
+        val dot = when {
+            state.readings.values.any { it.status == "CRIT" } -> palette.crit
+            state.readings.values.any { it.status == "WARN" } -> palette.warn
+            state.connected -> palette.ok
+            else -> palette.idle
+        }
+        Row(
+            Modifier.fillMaxWidth().padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier
+                    .size(10.dp)
+                    .clip(CircleShape)
+                    .background(dot),
+            )
+            Spacer(Modifier.size(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleMedium)
                 Text(
-                    g.label.uppercase(),
-                    style = MaterialTheme.typography.labelSmall,
+                    subtitle,
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Spacer(Modifier.height(4.dp))
-                Row(verticalAlignment = Alignment.Bottom) {
-                    Text(
-                        value?.let {
-                            if (g.unit == "rpm") it.toInt().toString() else "%.0f".format(it)
-                        } ?: "—",
-                        style = MaterialTheme.typography.headlineMedium,
-                        color = if (value == null) palette.idle else accent,
-                    )
-                    Text(
-                        " ${g.unit}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(bottom = 4.dp, start = 3.dp),
-                    )
-                }
             }
         }
     }
@@ -1026,23 +1112,15 @@ class MainActivity : ComponentActivity() {
         }
 
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            TowStatusBanner(state)
             HeroGauge(pan, "Transmission pan", 220f, 240f)
-            HeroGauge(conv, "Converter out", 230f, 250f)
+            val delta = if (pan?.valueF != null && conv?.valueF != null) conv.valueF - pan.valueF else null
+            HeroGauge(conv, "Converter out", 230f, 250f, deltaF = delta)
 
-            // Only render cards that exist — an empty tile with a dash is noise.
+            // One quiet strip instead of a grid of look-alike cards.
             val minis = listOf("coolant", "rpm", "oil", "speed")
                 .mapNotNull { state.readings[it] }
-            minis.chunked(2).forEach { pair ->
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    pair.forEach { reading ->
-                        MiniGauge(reading, Modifier.weight(1f))
-                    }
-                    if (pair.size == 1) Spacer(Modifier.weight(1f))
-                }
-            }
+            TelemetryStrip(minis)
 
             Row(
                 Modifier.fillMaxWidth().padding(top = 2.dp),
@@ -1107,7 +1185,7 @@ class MainActivity : ComponentActivity() {
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
                     Text(
-                        "MONITORS",
+                        "Monitors",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1123,7 +1201,7 @@ class MainActivity : ComponentActivity() {
                     }
                     Spacer(Modifier.height(12.dp))
                     Text(
-                        "SESSION",
+                        "Session",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1136,7 +1214,7 @@ class MainActivity : ComponentActivity() {
                     )
                     Spacer(Modifier.height(12.dp))
                     Text(
-                        "ADAPTER CHECK",
+                        "Adapter check",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1169,7 +1247,7 @@ class MainActivity : ComponentActivity() {
                     }
                     Spacer(Modifier.height(12.dp))
                     Text(
-                        "VEHICLE",
+                        "Vehicle",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1262,7 +1340,7 @@ class MainActivity : ComponentActivity() {
         ) {
             Column(Modifier.padding(14.dp)) {
                 Text(
-                    "REFUSED BY THE ECU",
+                    "Refused by the ECU",
                     style = MaterialTheme.typography.labelMedium,
                     color = palette.idle,
                 )
@@ -1315,7 +1393,7 @@ class MainActivity : ComponentActivity() {
         ) {
             Column(Modifier.padding(14.dp)) {
                 Text(
-                    "UPDATE AVAILABLE · v${release.version}",
+                    "Update available · v${release.version}",
                     style = MaterialTheme.typography.labelMedium,
                     color = palette.warn,
                 )
@@ -1358,7 +1436,7 @@ class MainActivity : ComponentActivity() {
             Column(Modifier.padding(14.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        "ADAPTER LOG",
+                        "Adapter log",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f),
@@ -1468,11 +1546,11 @@ class MainActivity : ComponentActivity() {
                 ) {
                     Column(Modifier.weight(1f)) {
                         Text(
-                            "ADAPTER",
+                            "Adapter",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.primary,
                         )
-                        Text("Choose your ELM327", style = MaterialTheme.typography.headlineSmall)
+                        Text("Choose your ELM327", style = MaterialTheme.typography.titleLarge)
                     }
                     IconButton(onClick = { stopScan(); onDismiss() }) {
                         Text("✕", style = MaterialTheme.typography.headlineSmall)
@@ -1487,7 +1565,7 @@ class MainActivity : ComponentActivity() {
                     ),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    item { SectionLabel("PAIRED (BLUETOOTH CLASSIC)") }
+                    item { SectionLabel("Paired · Bluetooth classic") }
                     if (bonded.isEmpty()) {
                         item {
                             Text(
@@ -1508,7 +1586,7 @@ class MainActivity : ComponentActivity() {
                     }
 
                     item { Spacer(Modifier.height(6.dp)) }
-                    item { SectionLabel("NEARBY (BLUETOOTH LE)") }
+                    item { SectionLabel("Nearby · Bluetooth LE") }
                     item {
                         Text(
                             "BLE dongles need no pairing. Scan and tap the one in your truck.",
@@ -1567,7 +1645,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     if (likely.isNotEmpty()) {
-                        item { SectionLabel("LIKELY OBD ADAPTERS") }
+                        item { SectionLabel("Likely OBD adapters") }
                     }
                     items(likely, key = { it.device.address }) { h ->
                         PickerRow(
@@ -1659,7 +1737,7 @@ class MainActivity : ComponentActivity() {
             Column(Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        "TRIP SUMMARY",
+                        "Trip summary",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f),
