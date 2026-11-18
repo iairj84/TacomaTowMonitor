@@ -61,3 +61,10 @@ Decisions:
   behind a Details expander, never in the headline answer.
 - Mid-flight state (B) lives in memory only; banking still happens on C so
   the next setting chains. Handoff return resets the toggle.
+- Sharing a confirmed result uses `describeToggle`, not the two-leg diff:
+  the diff still warns "3 modules changed" and lists every mover, which is
+  the noise the confirmed card removed. Confirmed first with baseline /
+  changed / reverted payloads, then one line per group for the rest.
+- First real truck run (2019 TRD, engine running): auto relock 120 -> 60 =
+  0x14 @ 750/0x40 byte 1, 66 -> 65 (bits 0-1), returning to 9A 66 20. 22
+  other blocks moved once; none returned.

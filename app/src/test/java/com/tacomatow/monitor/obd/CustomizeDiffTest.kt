@@ -252,6 +252,34 @@ class CustomizeDiffTest {
     }
 
     @Test
+    fun `there-and-back report names the confirmed block and compresses the rest`() {
+        // The real shape: auto relock 120 -> 60 moves byte 1 of 0x14 two bits
+        // and comes back, while the meter drifts and stays drifted.
+        val a = listOf(
+            reading("750", "Main body ECU", 0x14, "9A 66 20"),
+            reading("7C0", "Combination meter", 0x13, "8C"),
+        )
+        val b = listOf(
+            reading("750", "Main body ECU", 0x14, "9A 65 20"),
+            reading("7C0", "Combination meter", 0x13, "8B"),
+        )
+        val c = listOf(
+            reading("750", "Main body ECU", 0x14, "9A 66 20"),
+            reading("7C0", "Combination meter", 0x13, "8B"),
+        )
+        val check = confirmToggle(a, b, c)
+        assertEquals(1, check.confirmed.size)
+        val text = describeToggle(check, "auto relock: 120 → 60", "T1", "T2")
+        assertTrue(text.contains("CONFIRMED (1)"))
+        assertTrue(text.contains("0x14"))
+        assertTrue(text.contains("reverted: 9A 66 20"))
+        assertTrue(text.contains("Not followed back (1)"))
+        // The old two-leg share dumped every mover and warned about spread.
+        assertFalse(text.contains("WARNING"))
+        assertFalse(text.contains("blocks compared"))
+    }
+
+    @Test
     fun `survey lists header lid length and payload`() {
         val text = CustomizeExplorer.describeSurvey(
             listOf(

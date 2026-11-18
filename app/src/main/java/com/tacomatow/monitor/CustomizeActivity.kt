@@ -711,6 +711,7 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                                         changeDiff = if (d.identical) null else d
                                         answerIndex = 0; savedAnswerKey = null
                                         changeLabel = oldLabel
+                                        changeBaselineAt = old.at
                                         changeCurrentAt = now
                                         message = if (d.identical) {
                                             "Nothing moved yet — change that ONE setting on the radio, then scan again."
@@ -732,6 +733,7 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                                         changeDiff = check.diffAB
                                         answerIndex = 0; savedAnswerKey = null
                                         changeLabel = oldLabel
+                                        changeBaselineAt = old.at
                                         changeCurrentAt = now
                                         val banked = CustomizeSnapshotStore.Snapshot(
                                             at = now,
@@ -813,14 +815,15 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                             if (n.isNotEmpty()) "Ignored — moves on its own: " + n.joinToString(", ") { it.displayLid + " " + it.ecuLabel } else null
                         },
                         onShare = {
-                            val text = buildString {
-                                appendLine("Tacoma customize there-and-back — $shownLabel")
-                                appendLine("baseline: ${stamp.format(Date(changeBaselineAt))} ${match.baseHex}")
-                                appendLine("changed:  ${match.changedHex}")
-                                appendLine("reverted: ${match.revertedHex}")
-                                append(CustomizeExplorer.describe(check.diffAB, "baseline", "changed"))
-                            }
-                            share("Tacoma customize diff", text)
+                            share(
+                                "Tacoma customize there-and-back",
+                                com.tacomatow.monitor.obd.describeToggle(
+                                    check = check,
+                                    label = shownLabel,
+                                    baselineAt = stamp.format(Date(changeBaselineAt)),
+                                    changedAt = stamp.format(Date(changeCurrentAt)),
+                                ),
+                            )
                         },
                         onSave = {
                             val at = System.currentTimeMillis()
@@ -869,7 +872,15 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                             movedOnce = check.diffAB.changes.size,
                             unconfirmed = check.unconfirmed,
                             onShare = {
-                                share("Tacoma customize diff", CustomizeExplorer.describe(check.diffAB, "baseline", "changed"))
+                                share(
+                                    "Tacoma customize there-and-back",
+                                    com.tacomatow.monitor.obd.describeToggle(
+                                        check = check,
+                                        label = shownLabel,
+                                        baselineAt = stamp.format(Date(changeBaselineAt)),
+                                        changedAt = stamp.format(Date(changeCurrentAt)),
+                                    ),
+                                )
                             },
                             onRetry = {
                                 toggleCheck = null; changeDiff = null; answerIndex = 0

@@ -476,6 +476,53 @@ fun confirmToggle(
     return ToggleCheck(confirmed, diffAB, diffBC)
 }
 
+/**
+ * Plain-text there-and-back report.
+ *
+ * The two-leg diff is not the answer any more, so sharing it would hand back
+ * the same 20-mover dump the confirmed card exists to replace: confirmed
+ * blocks first with all three payloads, then one compressed line each for
+ * what moved once and what is known drift.
+ */
+fun describeToggle(
+    check: ToggleCheck,
+    label: String,
+    baselineAt: String,
+    changedAt: String,
+): String {
+    val sb = StringBuilder()
+    sb.appendLine("Tacoma customize there-and-back")
+    sb.appendLine("setting:  $label")
+    sb.appendLine("baseline: $baselineAt")
+    sb.appendLine("changed:  $changedAt")
+    sb.appendLine()
+    if (check.confirmed.isEmpty()) {
+        sb.appendLine("No block followed the setting there and back — nothing confirmed.")
+        sb.appendLine()
+    } else {
+        sb.appendLine("CONFIRMED (${check.confirmed.size}) — moved with the setting, returned with it")
+        for (m in check.rankedConfirmed) {
+            sb.appendLine("0x%02X  %s  (%s)".format(m.lid, m.ecuLabel, m.header))
+            sb.appendLine("  baseline: ${m.baseHex}")
+            sb.appendLine("  changed:  ${m.changedHex}")
+            sb.appendLine("  reverted: ${m.revertedHex}")
+            for (b in m.byteChanges) sb.appendLine("  ${b.describe()}")
+            sb.appendLine()
+        }
+    }
+    if (check.unconfirmed.isNotEmpty()) {
+        sb.appendLine("Not followed back (${check.unconfirmed.size}) — truck state, not the setting:")
+        sb.appendLine("  " + check.unconfirmed.joinToString(", ") { it.displayLid + " " + it.ecuLabel })
+        sb.appendLine()
+    }
+    val noise = (check.diffAB.noise + check.diffBC.noise).distinctBy { it.header to it.lid }
+    if (noise.isNotEmpty()) {
+        sb.appendLine("Ignored as known drift (${noise.size}):")
+        sb.appendLine("  " + noise.joinToString(", ") { it.displayLid + " " + it.ecuLabel })
+    }
+    return sb.toString().trimEnd()
+}
+
 data class LidReading(
     val header: String,
     val ecuLabel: String,

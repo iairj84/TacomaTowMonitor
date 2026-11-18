@@ -1,5 +1,7 @@
 # Changelog
 
+- 2026-11-18: Shared there-and-back report shows only the confirmed block with all three payloads, then one compressed line each for one-time movers and drift; baseline timestamp on the card no longer reads 1970 for a restored snapshot.
+
 - 2026-11-18: Scan for change is now there-and-back (baseline, changed, put-back): only a block that returns to its baseline byte counts, one-time movers hide behind Details.
 
 - 2026-11-18: Customize explorer names the answer itself — top-ranked mover in one card with Save / Not-this instead of per-block Record-or-Skip triage; rescans never block on unresolved movers.
