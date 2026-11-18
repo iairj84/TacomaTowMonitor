@@ -132,17 +132,15 @@ private fun CustomizeScreen(onBack: () -> Unit) {
     var valueTo by remember { mutableStateOf("") }
     // Rolling baseline: each Scan-for-change banks itself, so the next change
     // only needs change + scan. The frozen diff below is what the last scan
-    // found — Record/Skip consumes it, it survives the banking so the result
-    // stays visible after the baseline moves forward.
+    // found — the app picks the answer (top-ranked mover), the user just
+    // confirms or taps "Not this" to try the next one. No per-block triage.
     var changeDiff by remember { mutableStateOf<SnapshotDiff?>(null) }
-    // Blocks in the frozen diff already decided (Recorded or Skipped). The scan
-    // stays the baseline, but the next scan is blocked until every mover is
-    // resolved, so a 5-block diff can't be waved through with one tap.
-    var resolvedKeys by remember { mutableStateOf(setOf<Pair<String, Int>>()) }
+    // Which ranked mover is currently shown as the answer (0 = most likely).
+    var answerIndex by remember { mutableIntStateOf(0) }
     var changeLabel by remember { mutableStateOf("") }
     var changeBaselineAt by remember { mutableStateOf(0L) }
     var changeCurrentAt by remember { mutableStateOf(0L) }
-    fun hasPendingChange(): Boolean = changeDiff?.let { d -> d.changes.any { it.header to it.lid !in resolvedKeys } } == true
+    var savedAnswerKey by remember { mutableStateOf<Pair<String, Int>?>(null) }
     val records = remember {
         mutableStateListOf<ChangeRecord>().apply { addAll(CustomizeRecordStore.load(context)) }
     }
@@ -256,7 +254,7 @@ private fun CustomizeScreen(onBack: () -> Unit) {
             if (!useKnown) knownBlocks = CustomizeKnownBlocks.record(context, currentProfile, runs.last())
             results.clear()
             results.addAll(runs.last())
-            changeDiff = null; resolvedKeys = emptySet()
+            changeDiff = null; answerIndex = 0; savedAnswerKey = null
             lastScanFast = useKnown
             scanning = false
             val answering = runs.last().count { it.supported }
@@ -324,22 +322,13 @@ private fun CustomizeScreen(onBack: () -> Unit) {
     }
 
     /**
-     * Hand the dongle to the other app: bank a clean baseline if there is
-     * nothing pending, then disconnect and suspend auto-reconnect. A pending
-     * (unrecorded) diff is never clobbered — record its block first.
+     * Hand the dongle to the other app, then disconnect and suspend
+     * auto-reconnect. The last scan is already the baseline, so there is
+     * nothing to resolve first — scan again when you return.
      */
     fun pressHandoff() {
         if (scanning || handedOff) return
         val snap = snapshot
-        if (hasPendingChange()) {
-            message = "Last scan found a change — record the block (or Skip it) first, then hand off."
-            return
-        }
-        if (snap != null && results.isNotEmpty() && diff?.identical == false) {
-            message = "This scan differs from the baseline — record the block first, " +
-                "or tap Scan for change to save a fresh baseline, then hand off."
-            return
-        }
         if (snap != null && results.isNotEmpty()) {
             val banked = CustomizeSnapshotStore.Snapshot(
                 at = System.currentTimeMillis(),
@@ -385,19 +374,28 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                 val keys = knownBlocks.entries
                     .flatMap { (header, lids) -> lids.map { header to it } }.toSet()
                 val after = CustomizeExplorer.diff(snap.readings, found, keys, noiseBlocks)
+                val banked = CustomizeSnapshotStore.Snapshot(
+                    at = System.currentTimeMillis(),
+                    readings = found,
+                    label = snap.label,
+                )
+                snapshot = banked
+                CustomizeSnapshotStore.save(context, banked)
                 if (after.identical) {
-                    val banked = CustomizeSnapshotStore.Snapshot(
-                        at = System.currentTimeMillis(),
-                        readings = found,
-                        label = snap.label,
-                    )
-                    snapshot = banked
-                    CustomizeSnapshotStore.save(context, banked)
+                    changeDiff = null; answerIndex = 0; savedAnswerKey = null
                     message = "Reconnected, $hits blocks re-read, nothing moved — this scan " +
                         "is banked as the baseline."
                 } else {
-                    message = "Reconnected, $hits blocks re-read. Record the block behind " +
-                        "the setting — recording banks this scan as the baseline for the next one."
+                    changeDiff = after; answerIndex = 0; savedAnswerKey = null
+                    changeLabel = snap.label
+                    changeBaselineAt = snap.at
+                    changeCurrentAt = banked.at
+                    val top = after.topCandidate
+                    message = if (top != null) {
+                        "Reconnected, $hits blocks re-read. Your setting is probably ${top.displayLid} ${top.ecuLabel} — tap Save below, or Not this for the next candidate."
+                    } else {
+                        "Reconnected, $hits blocks re-read — see what moved below."
+                    }
                 }
             }
         }
@@ -513,12 +511,8 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Button(
                             onClick = {
-                                if (hasPendingChange()) {
-                                    message = "Record or Skip the last change first — a new survey would drop it."
-                                } else {
-                                    changeDiff = null; resolvedKeys = emptySet()
-                                    runScan(false)
-                                }
+                                changeDiff = null; answerIndex = 0; savedAnswerKey = null
+                                runScan(false)
                             },
                             enabled = !scanning && state.connected,
                         ) { Text(if (scanning) "Scanning…" else "Scan every LID") }
@@ -527,12 +521,8 @@ private fun CustomizeScreen(onBack: () -> Unit) {
 
                         OutlinedButton(
                             onClick = {
-                                if (hasPendingChange()) {
-                                    message = "Record or Skip the last change first — a re-scan would drop it."
-                                } else {
-                                    changeDiff = null; resolvedKeys = emptySet()
-                                    runScan(true)
-                                }
+                                changeDiff = null; answerIndex = 0; savedAnswerKey = null
+                                runScan(true)
                             },
                             enabled = !scanning && state.connected && knownBlocks.isNotEmpty(),
                         ) { Text("Re-scan known") }
@@ -595,13 +585,7 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                     Spacer(Modifier.height(6.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         OutlinedButton(
-                            onClick = {
-                                if (hasPendingChange()) {
-                                    message = "Record or Skip the last change first — learning noise re-scans everything."
-                                } else {
-                                    runNoiseLearn()
-                                }
-                            },
+                            onClick = { runNoiseLearn() },
                             enabled = !scanning && state.connected,
                         ) { Text("Learn noise · 3 scans") }
                         Spacer(Modifier.size(8.dp))
@@ -641,12 +625,12 @@ private fun CustomizeScreen(onBack: () -> Unit) {
             item {
                 Column {
                     Text(
-                        "STEP 3 — NAME IT, CHANGE IT, SCAN IT",
+                        "STEP 3 — NAME IT, CHANGE IT, SCAN",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary,
                     )
                     Text(
-                        "Type the setting, tap Scan for change to save what is on the truck now, change that ONE setting on the radio, then tap Scan for change again. That scan becomes the baseline for the next one — change, scan, repeat.",
+                        "Name the setting, tap Scan for change, change that ONE setting on the radio, tap Scan again — the app tells you which block is yours.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -686,10 +670,6 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         OutlinedButton(
                             onClick = {
-                                if (hasPendingChange()) {
-                                    message = "Record the last change (or Skip it) before scanning again — otherwise the baseline moves past it."
-                                    return@OutlinedButton
-                                }
                                 if (snapshot == null) {
                                     if (results.none { it.supported }) {
                                         message = "Run Step 1 first — there is nothing to save a baseline from yet."
@@ -702,7 +682,7 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                                     )
                                     snapshot = saved
                                     CustomizeSnapshotStore.save(context, saved)
-                                    changeDiff = null; resolvedKeys = emptySet()
+                                    changeDiff = null; answerIndex = 0; savedAnswerKey = null
                                     message = "Baseline saved — change that ONE setting on the radio, then tap Scan for change again."
                                 } else if (knownBlocks.isEmpty()) {
                                     message = "Run Step 1 first — no known blocks to re-scan yet."
@@ -715,14 +695,11 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                                         if (found.none { it.supported }) return@runScan
                                         val d = CustomizeExplorer.diff(old.readings, found, keys, noiseBlocks)
                                         val now = System.currentTimeMillis()
-                                        if (d.identical) {
-                                            changeDiff = null; resolvedKeys = emptySet()
-                                        } else {
-                                            changeDiff = d; resolvedKeys = emptySet()
-                                            changeLabel = oldLabel
-                                            changeBaselineAt = old.at
-                                            changeCurrentAt = now
-                                        }
+                                        changeDiff = if (d.identical) null else d
+                                        answerIndex = 0; savedAnswerKey = null
+                                        changeLabel = oldLabel
+                                        changeBaselineAt = old.at
+                                        changeCurrentAt = now
                                         val banked = CustomizeSnapshotStore.Snapshot(
                                             at = now,
                                             readings = found,
@@ -733,7 +710,9 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                                         message = if (d.identical) {
                                             "No change moved — this scan is the baseline, change the setting and scan again."
                                         } else {
-                                            "Record only the block behind the setting — this scan is already the baseline for the next one."
+                                            val top = d.topCandidate
+                                            if (top != null) "Your setting is probably ${top.displayLid} ${top.ecuLabel} — tap Save below, or Not this for the next candidate."
+                                            else "Something moved — see the answer below."
                                         }
                                     }
                                 }
@@ -748,7 +727,7 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                             TextButton(onClick = {
                                 snapshot = null
                                 label = ""
-                                changeDiff = null; resolvedKeys = emptySet()
+                                changeDiff = null; answerIndex = 0; savedAnswerKey = null
                                 changeLabel = ""
                                 CustomizeSnapshotStore.clear(context)
                             }) {
@@ -779,77 +758,45 @@ private fun CustomizeScreen(onBack: () -> Unit) {
             val snap = snapshot
             val frozen = changeDiff
             val liveShown = diff ?: CustomizeExplorer.diff(emptyList(), emptyList())
-            if ((frozen != null || (snap != null && results.isNotEmpty())) && !scanning) {
+            // Smart answer: the app ranks the movers and names one. The user
+            // never triages blocks — just Save, or "Not this" to try next.
+            val answerDiff = frozen ?: liveShown
+            val ranked = answerDiff.rankedChanges
+            val answer = ranked.getOrNull(answerIndex.coerceAtLeast(0))
+            if ((frozen != null || (snap != null && results.isNotEmpty())) && !scanning && answer != null) {
                 item {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(
-                            "YOUR CHANGE — WHAT MOVED",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                        val shownLabel = if (frozen != null) changeLabel.ifBlank { "Unnamed change" }
-                            else (snap?.label ?: "").ifBlank { "Unnamed change" }
-                        val savedAt = if (frozen != null) changeBaselineAt else (snap?.at ?: System.currentTimeMillis())
-                        val currentAt = if (frozen != null) changeCurrentAt else System.currentTimeMillis()
-                        // Hide blocks already Recorded/Skipped so a 5-block diff shrinks
-                        // as it is worked through instead of vanishing on first tap.
-                        val shown = if (frozen != null && resolvedKeys.isNotEmpty()) {
-                            frozen.copy(changes = frozen.rankedChanges.filterNot { it.header to it.lid in resolvedKeys })
-                        } else if (frozen != null) {
-                            frozen.copy(changes = frozen.rankedChanges)
-                        } else {
-                            liveShown
-                        }
-                        val pending = shown.changes.size
-                        if (frozen != null && pending > 0) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    if (pending == 1) "1 block left — Record it or Skip it before scanning again."
-                                    else "$pending blocks moved — work through each one before scanning again.",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.weight(1f),
-                                )
-                                TextButton(onClick = {
-                                    changeDiff = null; resolvedKeys = emptySet()
-                                    message = "Skipped all — this scan stays the baseline. Change the next setting and scan again."
-                                }) { Text("Skip all") }
-                            }
-                        }
-                        DiffCard(
-                        diff = shown,
+                    val shownLabel = (if (frozen != null) changeLabel else snap?.label ?: "").ifBlank { "Unnamed change" }
+                    val savedAt = if (frozen != null) changeBaselineAt else (snap?.at ?: System.currentTimeMillis())
+                    val currentAt = if (frozen != null) changeCurrentAt else System.currentTimeMillis()
+                    val isSaved = savedAnswerKey == (answer.header to answer.lid)
+                    AnswerCard(
+                        answer = answer,
+                        rank = ranked.indexOf(answer) + 1,
+                        ofTotal = ranked.size,
+                        others = ranked.filterNot { it == answer },
                         label = shownLabel,
+                        saved = isSaved,
+                        noiseText = if (answerDiff.noise.isNotEmpty()) {
+                            "Ignored — moves on its own: " + answerDiff.noise.joinToString(", ") {
+                                it.displayLid + " " + it.ecuLabel
+                            }
+                        } else null,
                         onShare = {
                             val text = CustomizeExplorer.describe(
-                                diff = shown,
+                                diff = answerDiff,
                                 savedLabel = "${stamp.format(Date(savedAt))} — $shownLabel",
                                 currentLabel = stamp.format(Date(currentAt)),
                             )
                             share("Tacoma customize diff", text)
                         },
-                        onSkip = { change ->
-                            if (frozen != null) {
-                                val next = resolvedKeys + (change.header to change.lid)
-                                if (next.size >= frozen.changes.size) {
-                                    changeDiff = null; resolvedKeys = emptySet()
-                                    message = "All ${frozen.changes.size} movers resolved — this scan stays the baseline. Change the next setting and scan again."
-                                } else {
-                                    resolvedKeys = next
-                                    message = "Skipped ${change.displayLid} (not your change) — ${frozen.changes.size - next.size} left."
-                                }
-                            }
-                        },
-                        onRecord = { change ->
-                            // One block per label. Recording every block the
-                            // diff touched used to stamp ten entries with one
-                            // setting name, nine of which were vehicle state.
+                        onSave = {
                             val at = System.currentTimeMillis()
-                            val added = change.byteChanges.map { b ->
+                            val added = answer.byteChanges.map { b ->
                                 ChangeRecord(
                                     label = shownLabel,
-                                    header = change.header,
-                                    ecuLabel = change.ecuLabel,
-                                    lid = change.lid,
+                                    header = answer.header,
+                                    ecuLabel = answer.ecuLabel,
+                                    lid = answer.lid,
                                     byteIndex = b.index,
                                     before = b.before,
                                     after = b.after,
@@ -862,40 +809,45 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                             if (added.isNotEmpty()) {
                                 records.addAll(added)
                                 CustomizeRecordStore.save(context, records.toList())
-                                if (frozen != null) {
-                                    // Rolling baseline already banked this scan —
-                                    // resolve just this block, keep the rest visible.
-                                    val next = resolvedKeys + (change.header to change.lid)
-                                    if (next.size >= frozen.changes.size) {
-                                        changeDiff = null; resolvedKeys = emptySet()
-                                        message = "Recorded ${change.displayLid} ${change.ecuLabel}. " +
-                                            "All movers resolved — this scan is already the baseline, change the next setting and scan again."
-                                    } else {
-                                        resolvedKeys = next
-                                        message = "Recorded ${change.displayLid} ${change.ecuLabel} only — ${frozen.changes.size - next.size} left. " +
-                                            "If that block and your setting disagree later, clear it and try the next candidate."
-                                    }
-                                } else {
-                                    // Live diff with no frozen copy (e.g. restored
-                                    // baseline): this scan becomes the baseline.
-                                    snapshot?.let { s ->
-                                        val banked = CustomizeSnapshotStore.Snapshot(
-                                            at = System.currentTimeMillis(),
-                                            readings = results.toList(),
-                                            label = s.label,
-                                        )
-                                        snapshot = banked
-                                        CustomizeSnapshotStore.save(context, banked)
-                                    }
-                                    message = "Recorded ${change.displayLid} ${change.ecuLabel} only. " +
-                                        "This scan is already the baseline — change the next setting and scan again. " +
-                                        "If that block and your setting disagree later, clear it and " +
-                                        "try the next candidate."
-                                }
+                                savedAnswerKey = answer.header to answer.lid
+                                message = "Saved $shownLabel → ${answer.displayLid} ${answer.ecuLabel}. Change the next setting and scan again."
                             }
                         },
+                        onNotThis = {
+                            // Drop the save for this candidate (if any) and show next.
+                            savedAnswerKey?.let { key ->
+                                val kept = records.filterNot { it.header to it.lid == key && it.label == shownLabel }
+                                if (kept.size != records.size) {
+                                    records.clear(); records.addAll(kept)
+                                    CustomizeRecordStore.save(context, kept)
+                                }
+                                savedAnswerKey = null
+                            }
+                            answerIndex = (answerIndex + 1) % ranked.size
+                            val next = ranked[answerIndex]
+                            message = "Trying next: ${next.displayLid} ${next.ecuLabel}. If the setting still disagrees, put it back and scan again."
+                        },
                     )
-                    }
+                }
+            } else if ((frozen != null || (snap != null && results.isNotEmpty())) && !scanning) {
+                item {
+                    val shownLabel = (if (frozen != null) changeLabel else snap?.label ?: "").ifBlank { "Unnamed change" }
+                    val savedAt = if (frozen != null) changeBaselineAt else (snap?.at ?: System.currentTimeMillis())
+                    val currentAt = if (frozen != null) changeCurrentAt else System.currentTimeMillis()
+                    DiffCard(
+                        diff = answerDiff,
+                        label = shownLabel,
+                        onShare = {
+                            val text = CustomizeExplorer.describe(
+                                diff = answerDiff,
+                                savedLabel = "${stamp.format(Date(savedAt))} — $shownLabel",
+                                currentLabel = stamp.format(Date(currentAt)),
+                            )
+                            share("Tacoma customize diff", text)
+                        },
+                        onRecord = { _ -> },
+                        onSkip = { _ -> },
+                    )
                 }
             }
 
@@ -1039,6 +991,93 @@ private fun RecordRow(record: ChangeRecord, conflicts: Boolean) {
                 color = if (conflicts) MaterialTheme.colorScheme.error
                 else MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+    }
+}
+
+@Composable
+private fun AnswerCard(
+    answer: BlockChange,
+    rank: Int,
+    ofTotal: Int,
+    others: List<BlockChange>,
+    label: String,
+    saved: Boolean,
+    noiseText: String?,
+    onShare: () -> Unit,
+    onSave: () -> Unit,
+    onNotThis: () -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("YOUR SETTING IS PROBABLY", style = MaterialTheme.typography.labelMedium)
+                TextButton(onClick = onShare) { Text("Share") }
+            }
+            Text(
+                "${answer.displayLid}  ·  ${answer.ecuLabel}",
+                style = MaterialTheme.typography.headlineSmall,
+            )
+            Text(
+                "\"$label\"",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "before  ${answer.beforeHex}",
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                "after   ${answer.afterHex}",
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+            )
+            answer.byteChanges.forEach { b ->
+                Text(
+                    b.describe(),
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                b.binaryText()?.let { bits ->
+                    Text(
+                        bits,
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                if (answer.changedBitCount == 1) "1 bit moved — that is what one option looks like."
+                else "${answer.changedBitCount} bits moved — if this disagrees with the setting, tap Not this below.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (others.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Also moved (truck state, not your setting): " + others.joinToString(", ") { it.displayLid + " " + it.ecuLabel },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            noiseText?.let {
+                Spacer(Modifier.height(4.dp))
+                Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Button(onClick = onSave, enabled = !saved) { Text(if (saved) "Saved ✓" else "Save ${answer.displayLid}") }
+                if (ofTotal > 1) {
+                    Spacer(Modifier.size(8.dp))
+                    OutlinedButton(onClick = onNotThis) { Text("Not this? ($rank/$ofTotal)") }
+                }
+            }
         }
     }
 }

@@ -33,3 +33,17 @@ positions the zone edges do not have (SpaceBetween, not the real fractions),
 with one caption naming both thresholds. Verified with
 `./gradlew assembleDebug` and `./gradlew testDebugUnitTest` (both pass,
 offline).
+
+## 2026-11-18 — Explorer answers instead of triaging
+
+Why: five movers and five Record/Skip decisions put the work on the driver —
+the app already ranks movers (single-bit first), so it should just say which
+one is yours.
+
+Decisions:
+- Step 3 shows one answer card (top-ranked mover) with Save + "Not this"
+  cycling to the next candidate; other movers listed as truck state.
+- Removed resolved-keys, pending-change guards, Skip-all: rescans and
+  handoffs never block. Baseline still rolls forward every scan.
+- Saving writes records for the shown answer only, stamped with the Step 3
+  label and the truck profile.
