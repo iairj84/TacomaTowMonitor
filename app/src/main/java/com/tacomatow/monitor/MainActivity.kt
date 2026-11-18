@@ -408,14 +408,6 @@ class MainActivity : ComponentActivity() {
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     TextButton(
                         onClick = {
-                            startActivity(Intent(this@MainActivity, CustomizeActivity::class.java))
-                        },
-                        enabled = state.connected,
-                    ) {
-                        Text("Customize explorer")
-                    }
-                    TextButton(
-                        onClick = {
                             startActivity(Intent(this@MainActivity, DiagnosticsActivity::class.java))
                         },
                         enabled = state.connected,

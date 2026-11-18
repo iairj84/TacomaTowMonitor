@@ -1,5 +1,6 @@
 package com.tacomatow.monitor
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -369,6 +370,31 @@ private fun DiagnosticsScreen(onBack: () -> Unit) {
 
             Spacer(Modifier.height(12.dp))
             DidSweepCard()
+
+            Spacer(Modifier.height(12.dp))
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Advanced", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Read-only body-block survey left over from mapping work. " +
+                            "Settings changes themselves are quicker in a dedicated " +
+                            "customize app — this stays for reference only.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    TextButton(
+                        onClick = {
+                            context.startActivity(Intent(context, CustomizeActivity::class.java))
+                        },
+                        enabled = state.connected,
+                    ) { Text("Open customize explorer (read-only)") }
+                }
+            }
 
             Spacer(Modifier.height(24.dp).navigationBarsPadding())
         }

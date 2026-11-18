@@ -1,5 +1,7 @@
 # Changelog
 
+- 2026-11-18: Retired the write path — the app is read-only again (`3B` send deleted from client and repository, writable-list UI gone, entry buried in Diagnostics → Advanced). Settings changes are quicker in a dedicated customize app; the explorer stays for reference only.
+
 - 2026-11-18: Vehicle-matched writable list with full safeguards, starting with the safest single-bit setting (750/0x40 0x14 byte 0 bit 3 feedback lights): same-patch matching, observed-values-only, 0x11 lock/unlock held with its matrix reason, single-frame 3B with 7B/7F-3B-NRC parsing, engine-off reread + RPM/speed/volts checks, backup-first, cooldown, audit log, typed-LID + ack. 192 tests.
 
 - 2026-11-18: Guarded write-path design doc from the 12-setting mapping (shared-byte and allowlist risks, missing proofs, phase order). No write code; reads only.

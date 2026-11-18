@@ -284,37 +284,6 @@ class Elm327ClientTest {
     }
 
     @Test
-    fun `a 7B echo is a write accept`() {
-        val sent = mutableListOf<String>()
-        val c = recordingClient(sent, ceaReply = "OK", readReply = "758 02 7B 14")
-        assertEquals(
-            Elm327Client.GatewayWrite.Ok,
-            c.writeGatewayLid(0x40, 0x14, byteArrayOf(0x9A.toByte(), 0x66, 0x20)),
-        )
-    }
-
-    @Test
-    fun `a 7F 3B answer reports its NRC`() {
-        val sent = mutableListOf<String>()
-        val c = recordingClient(sent, ceaReply = "OK", readReply = "758 03 7F 3B 33")
-        assertEquals(
-            Elm327Client.GatewayWrite.Refused("33"),
-            c.writeGatewayLid(0x40, 0x14, byteArrayOf(0x9A.toByte(), 0x66, 0x20)),
-        )
-    }
-
-    @Test
-    fun `an oversize write never reaches the bus`() {
-        val sent = mutableListOf<String>()
-        val c = recordingClient(sent, ceaReply = "OK")
-        assertEquals(
-            Elm327Client.GatewayWrite.TooLarge,
-            c.writeGatewayLid(0x40, 0x14, ByteArray(6)),
-        )
-        assertFalse("oversize payload was sent", sent.any { it.contains("3B14") })
-    }
-
-    @Test
     fun `keep-alive through the gateway keeps the header`() {
         val sent = mutableListOf<String>()
         val c = recordingClient(sent, ceaReply = "OK")

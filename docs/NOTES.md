@@ -107,3 +107,20 @@ Observed (13 entries, 1 exact duplicate 66->65 + one `::` typo = 12 unique):
   engine-off reread with live RPM/speed/volts checks, backup-first,
   cooldown, audit log, typed-LID + ack — starting with the safest
   single-bit setting (750/0x40 0x14 byte 0 bit 3).
+
+## 2026-11-18 — Write path retired, explorer buried
+
+Why: a free off-the-shelf app (Car Scanner ELM OBD2) already does every
+settings change, so maintaining our own `3B` sender buys risk for no benefit —
+and the tow monitor is the part nothing else does set-and-forget.
+
+Decisions:
+- Deleted, not disabled: `Elm327Client.writeGatewayLid` +
+  `ObdRepository.writeKnownByte` + `WritableCatalog`/`WriteStores`/
+  `WriteOutcome` + the WritableCard UI and its tests. No `3B` transmit
+  remains anywhere in the tree. `WritePolicy` stays because the raw console
+  in Diagnostics still routes typed commands through its refusal list.
+- The explorer itself stays (reads only) but leaves the dashboard: entry is
+  now Diagnostics → Advanced → "Open customize explorer (read-only)".
+- `docs/superpowers/specs/write-path.md` is marked retired; the mapping
+  table in it stays as the record of what was observed.
