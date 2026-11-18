@@ -98,5 +98,7 @@ Observed (13 entries, 1 exact duplicate 66->65 + one `::` typo = 12 unique):
   (171) and 0x81 (129) are currently refused. Widening needs each block
   proven as stored settings (no idle drift) first — not a range bump.
 - Missing for any write: full block payloads (to prove single-frame 3B,
-  payload <= 5 bytes) and the 0x11 full matrix. Next step is still the
-  owner's pick: design doc vs `3B` transmit+NRC spike, same-value write first.
+  payload <= 5 bytes) and the 0x11 full matrix. Owner picked the design doc:
+  `docs/superpowers/specs/write-path.md` now spells out the shared-byte
+  risks (0x14 bit-level, 0x11 full-matrix hold), the 0xAB/0x81 allowlist
+  refusals, and the phase order. No write code.
