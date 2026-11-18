@@ -130,11 +130,13 @@ private fun CustomizeScreen(onBack: () -> Unit) {
     var label by remember { mutableStateOf(restored?.label ?: "") }
     var valueFrom by remember { mutableStateOf("") }
     var valueTo by remember { mutableStateOf("") }
-    // Rolling baseline: each Scan-for-change banks itself, so the next change
-    // only needs change + scan. The frozen diff below is what the last scan
-    // found — the app picks the answer (top-ranked mover), the user just
-    // confirms or taps "Not this" to try the next one. No per-block triage.
+    // There-and-back: Scan 1 banks the baseline (A), Scan 2 stores the
+    // changed sweep (B) without banking, Scan 3 reads the reverted sweep (C)
+    // and only a block that tracked A->B->A counts. The frozen diff below is
+    // the last leg; the confirmed answer comes from ToggleCheck.
     var changeDiff by remember { mutableStateOf<SnapshotDiff?>(null) }
+    var midReadings by remember { mutableStateOf<List<LidReading>?>(null) }
+    var toggleCheck by remember { mutableStateOf<com.tacomatow.monitor.obd.ToggleCheck?>(null) }
     // Which ranked mover is currently shown as the answer (0 = most likely).
     var answerIndex by remember { mutableIntStateOf(0) }
     var changeLabel by remember { mutableStateOf("") }
@@ -254,7 +256,7 @@ private fun CustomizeScreen(onBack: () -> Unit) {
             if (!useKnown) knownBlocks = CustomizeKnownBlocks.record(context, currentProfile, runs.last())
             results.clear()
             results.addAll(runs.last())
-            changeDiff = null; answerIndex = 0; savedAnswerKey = null
+            changeDiff = null; answerIndex = 0; savedAnswerKey = null; midReadings = null; toggleCheck = null
             lastScanFast = useKnown
             scanning = false
             val answering = runs.last().count { it.supported }
@@ -326,6 +328,12 @@ private fun CustomizeScreen(onBack: () -> Unit) {
      * auto-reconnect. The last scan is already the baseline, so there is
      * nothing to resolve first — scan again when you return.
      */
+    fun resetToggle() {
+        midReadings = null
+        toggleCheck = null
+        changeDiff = null; answerIndex = 0; savedAnswerKey = null
+    }
+
     fun pressHandoff() {
         if (scanning || handedOff) return
         val snap = snapshot
@@ -381,6 +389,7 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                 )
                 snapshot = banked
                 CustomizeSnapshotStore.save(context, banked)
+                midReadings = null; toggleCheck = null
                 if (after.identical) {
                     changeDiff = null; answerIndex = 0; savedAnswerKey = null
                     message = "Reconnected, $hits blocks re-read, nothing moved — this scan " +
@@ -486,7 +495,7 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                         )
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            "Ignition ON, engine OFF, battery healthy. The adapter must be connected " +
+                            "Parked, engine RUNNING (radio needs it), battery healthy. The adapter must be connected " +
                                 "(return to the dashboard and connect first).",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onErrorContainer,
@@ -682,11 +691,13 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                                     )
                                     snapshot = saved
                                     CustomizeSnapshotStore.save(context, saved)
-                                    changeDiff = null; answerIndex = 0; savedAnswerKey = null
-                                    message = "Baseline saved — change that ONE setting on the radio, then tap Scan for change again."
+                                    resetToggle()
+                                    changeLabel = saved.label
+                                    changeBaselineAt = saved.at
+                                    message = "Baseline saved (1/3) — change that ONE setting on the radio, then tap Scan for change again."
                                 } else if (knownBlocks.isEmpty()) {
                                     message = "Run Step 1 first — no known blocks to re-scan yet."
-                                } else {
+                                } else if (midReadings == null) {
                                     val old = snapshot!!
                                     val oldLabel = composedLabel()
                                     val keys = knownBlocks.entries
@@ -695,10 +706,32 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                                         if (found.none { it.supported }) return@runScan
                                         val d = CustomizeExplorer.diff(old.readings, found, keys, noiseBlocks)
                                         val now = System.currentTimeMillis()
+                                        midReadings = found
+                                        toggleCheck = null
                                         changeDiff = if (d.identical) null else d
                                         answerIndex = 0; savedAnswerKey = null
                                         changeLabel = oldLabel
-                                        changeBaselineAt = old.at
+                                        changeCurrentAt = now
+                                        message = if (d.identical) {
+                                            "Nothing moved yet — change that ONE setting on the radio, then scan again."
+                                        } else {
+                                            "${d.changes.size} block(s) moved (2/3) — now put that setting BACK to \"${valueFrom.ifBlank { "its first value" }}\" and tap Scan for change again. Only the block that follows you back counts."
+                                        }
+                                    }
+                                } else {
+                                    val old = snapshot!!
+                                    val mid = midReadings!!
+                                    val oldLabel = composedLabel()
+                                    val keys = knownBlocks.entries
+                                        .flatMap { (header, lids) -> lids.map { header to it } }.toSet()
+                                    runScan(true) { found ->
+                                        if (found.none { it.supported }) return@runScan
+                                        val check = com.tacomatow.monitor.obd.confirmToggle(old.readings, mid, found, keys, noiseBlocks)
+                                        val now = System.currentTimeMillis()
+                                        toggleCheck = check
+                                        changeDiff = check.diffAB
+                                        answerIndex = 0; savedAnswerKey = null
+                                        changeLabel = oldLabel
                                         changeCurrentAt = now
                                         val banked = CustomizeSnapshotStore.Snapshot(
                                             at = now,
@@ -707,12 +740,12 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                                         )
                                         snapshot = banked
                                         CustomizeSnapshotStore.save(context, banked)
-                                        message = if (d.identical) {
-                                            "No change moved — this scan is the baseline, change the setting and scan again."
+                                        midReadings = null
+                                        message = if (check.confirmed.isNotEmpty()) {
+                                            val top = check.topConfirmed!!
+                                            "Confirmed (3/3): ${top.displayLid} ${top.ecuLabel} followed you there and back — tap Save below, or Not this for the next confirmed block."
                                         } else {
-                                            val top = d.topCandidate
-                                            if (top != null) "Your setting is probably ${top.displayLid} ${top.ecuLabel} — tap Save below, or Not this for the next candidate."
-                                            else "Something moved — see the answer below."
+                                            "Nothing followed you both ways — that setting may live in the radio itself, or truck state drowned it. Try again without opening doors or touching HVAC."
                                         }
                                     }
                                 }
@@ -723,11 +756,11 @@ private fun CustomizeScreen(onBack: () -> Unit) {
 
                         Spacer(Modifier.size(8.dp))
 
-                        if (snapshot != null || changeDiff != null) {
+                        if (snapshot != null || changeDiff != null || toggleCheck != null || midReadings != null) {
                             TextButton(onClick = {
                                 snapshot = null
                                 label = ""
-                                changeDiff = null; answerIndex = 0; savedAnswerKey = null
+                                resetToggle()
                                 changeLabel = ""
                                 CustomizeSnapshotStore.clear(context)
                             }) {
@@ -739,14 +772,14 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                     val saved = snapshot
                     Text(
                         if (saved == null) {
-                            "To map a setting: name it, tap Scan for change to save the baseline, then change that ONE setting " +
-                                "on the factory radio (Menu → Setup → Vehicle Customization) and tap Scan for change " +
-                                "again. The block that moved is that setting."
+                            "To map a setting (engine RUNNING, parked): name it, Scan (1/3 baseline), change that ONE setting " +
+                                "on the factory radio, Scan (2/3), put it BACK, Scan (3/3). Only the block that follows both ways counts."
+                        } else if (midReadings != null && toggleCheck == null) {
+                            "Waiting on the put-back scan — change \"${saved.label.ifBlank { "that setting" }}\" back to its first value, then Scan again."
                         } else {
                             val at = stamp.format(Date(saved.at))
                             "\"${saved.label.ifBlank { "Unnamed change" }}\" · snapshot from $at · " +
-                                "${saved.readings.count { it.supported }} blocks. That scan is the baseline — change the next setting " +
-                                "on the radio, then scan again."
+                                "${saved.readings.count { it.supported }} blocks banked. Name the next setting and scan again."
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -757,46 +790,46 @@ private fun CustomizeScreen(onBack: () -> Unit) {
 
             val snap = snapshot
             val frozen = changeDiff
-            val liveShown = diff ?: CustomizeExplorer.diff(emptyList(), emptyList())
-            // Smart answer: the app ranks the movers and names one. The user
-            // never triages blocks — just Save, or "Not this" to try next.
-            val answerDiff = frozen ?: liveShown
-            val ranked = answerDiff.rankedChanges
-            val answer = ranked.getOrNull(answerIndex.coerceAtLeast(0))
-            if ((frozen != null || (snap != null && results.isNotEmpty())) && !scanning && answer != null) {
+            val check = toggleCheck
+            val mid = midReadings
+            if (check != null && !scanning) {
+                // There-and-back verdict: only blocks that tracked the toggle count.
+                val ranked = check.rankedConfirmed
+                val match = ranked.getOrNull(answerIndex.coerceAtLeast(0))
+                if (match != null) {
                 item {
-                    val shownLabel = (if (frozen != null) changeLabel else snap?.label ?: "").ifBlank { "Unnamed change" }
-                    val savedAt = if (frozen != null) changeBaselineAt else (snap?.at ?: System.currentTimeMillis())
-                    val currentAt = if (frozen != null) changeCurrentAt else System.currentTimeMillis()
-                    val isSaved = savedAnswerKey == (answer.header to answer.lid)
+                    val shownLabel = changeLabel.ifBlank { "Unnamed change" }
+                    val isSaved = savedAnswerKey == (match.header to match.lid)
+                    val answer = match.toBlockChange()
                     AnswerCard(
                         answer = answer,
-                        rank = ranked.indexOf(answer) + 1,
+                        rank = ranked.indexOf(match) + 1,
                         ofTotal = ranked.size,
-                        others = ranked.filterNot { it == answer },
-                        label = shownLabel,
+                        others = check.unconfirmed,
+                        label = "$shownLabel (confirmed there-and-back)",
                         saved = isSaved,
-                        noiseText = if (answerDiff.noise.isNotEmpty()) {
-                            "Ignored — moves on its own: " + answerDiff.noise.joinToString(", ") {
-                                it.displayLid + " " + it.ecuLabel
-                            }
-                        } else null,
+                        noiseText = run {
+                            val n = (check.diffAB.noise + check.diffBC.noise).distinctBy { it.header to it.lid }
+                            if (n.isNotEmpty()) "Ignored — moves on its own: " + n.joinToString(", ") { it.displayLid + " " + it.ecuLabel } else null
+                        },
                         onShare = {
-                            val text = CustomizeExplorer.describe(
-                                diff = answerDiff,
-                                savedLabel = "${stamp.format(Date(savedAt))} — $shownLabel",
-                                currentLabel = stamp.format(Date(currentAt)),
-                            )
+                            val text = buildString {
+                                appendLine("Tacoma customize there-and-back — $shownLabel")
+                                appendLine("baseline: ${stamp.format(Date(changeBaselineAt))} ${match.baseHex}")
+                                appendLine("changed:  ${match.changedHex}")
+                                appendLine("reverted: ${match.revertedHex}")
+                                append(CustomizeExplorer.describe(check.diffAB, "baseline", "changed"))
+                            }
                             share("Tacoma customize diff", text)
                         },
                         onSave = {
                             val at = System.currentTimeMillis()
-                            val added = answer.byteChanges.map { b ->
+                            val added = match.byteChanges.map { b ->
                                 ChangeRecord(
                                     label = shownLabel,
-                                    header = answer.header,
-                                    ecuLabel = answer.ecuLabel,
-                                    lid = answer.lid,
+                                    header = match.header,
+                                    ecuLabel = match.ecuLabel,
+                                    lid = match.lid,
                                     byteIndex = b.index,
                                     before = b.before,
                                     after = b.after,
@@ -809,12 +842,11 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                             if (added.isNotEmpty()) {
                                 records.addAll(added)
                                 CustomizeRecordStore.save(context, records.toList())
-                                savedAnswerKey = answer.header to answer.lid
-                                message = "Saved $shownLabel → ${answer.displayLid} ${answer.ecuLabel}. Change the next setting and scan again."
+                                savedAnswerKey = match.header to match.lid
+                                message = "Saved $shownLabel → ${match.displayLid} ${match.ecuLabel}. Change the next setting and scan again."
                             }
                         },
                         onNotThis = {
-                            // Drop the save for this candidate (if any) and show next.
                             savedAnswerKey?.let { key ->
                                 val kept = records.filterNot { it.header to it.lid == key && it.label == shownLabel }
                                 if (kept.size != records.size) {
@@ -825,28 +857,36 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                             }
                             answerIndex = (answerIndex + 1) % ranked.size
                             val next = ranked[answerIndex]
-                            message = "Trying next: ${next.displayLid} ${next.ecuLabel}. If the setting still disagrees, put it back and scan again."
+                            message = "Trying next confirmed: ${next.displayLid} ${next.ecuLabel}."
                         },
                     )
                 }
-            } else if ((frozen != null || (snap != null && results.isNotEmpty())) && !scanning) {
+                } else if (check.confirmed.isEmpty() && !scanning) {
+                    item {
+                        val shownLabel = changeLabel.ifBlank { "Unnamed change" }
+                        NoConfirmCard(
+                            label = shownLabel,
+                            movedOnce = check.diffAB.changes.size,
+                            unconfirmed = check.unconfirmed,
+                            onShare = {
+                                share("Tacoma customize diff", CustomizeExplorer.describe(check.diffAB, "baseline", "changed"))
+                            },
+                            onRetry = {
+                                toggleCheck = null; changeDiff = null; answerIndex = 0
+                                message = "Cleared the miss — baseline is still banked. Change ONE setting and scan again."
+                            },
+                        )
+                    }
+                }
+            } else if (mid != null && frozen != null && !scanning) {
                 item {
-                    val shownLabel = (if (frozen != null) changeLabel else snap?.label ?: "").ifBlank { "Unnamed change" }
-                    val savedAt = if (frozen != null) changeBaselineAt else (snap?.at ?: System.currentTimeMillis())
-                    val currentAt = if (frozen != null) changeCurrentAt else System.currentTimeMillis()
-                    DiffCard(
-                        diff = answerDiff,
+                    val shownLabel = changeLabel.ifBlank { "Unnamed change" }
+                    WaitingPutBackCard(
                         label = shownLabel,
+                        moved = frozen.changes.size,
                         onShare = {
-                            val text = CustomizeExplorer.describe(
-                                diff = answerDiff,
-                                savedLabel = "${stamp.format(Date(savedAt))} — $shownLabel",
-                                currentLabel = stamp.format(Date(currentAt)),
-                            )
-                            share("Tacoma customize diff", text)
+                            share("Tacoma customize diff", CustomizeExplorer.describe(frozen, "baseline", "changed"))
                         },
-                        onRecord = { _ -> },
-                        onSkip = { _ -> },
                     )
                 }
             }
@@ -1058,17 +1098,25 @@ private fun AnswerCard(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            if (others.isNotEmpty()) {
+            var showDetails by remember { mutableStateOf(false) }
+            if (others.isNotEmpty() || noiseText != null) {
                 Spacer(Modifier.height(6.dp))
-                Text(
-                    "Also moved (truck state, not your setting): " + others.joinToString(", ") { it.displayLid + " " + it.ecuLabel },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                TextButton(onClick = { showDetails = !showDetails }) {
+                    Text(if (showDetails) "Hide details" else "Details (${others.size} other mover${if (others.size == 1) "" else "s"})")
+                }
             }
-            noiseText?.let {
-                Spacer(Modifier.height(4.dp))
-                Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (showDetails) {
+                if (others.isNotEmpty()) {
+                    Text(
+                        "Moved once but did not follow you back (truck state): " + others.joinToString(", ") { it.displayLid + " " + it.ecuLabel },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                noiseText?.let {
+                    Spacer(Modifier.height(4.dp))
+                    Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
             Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1078,6 +1126,78 @@ private fun AnswerCard(
                     OutlinedButton(onClick = onNotThis) { Text("Not this? ($rank/$ofTotal)") }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun WaitingPutBackCard(
+    label: String,
+    moved: Int,
+    onShare: () -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("STEP 2 OF 3 — NOW PUT IT BACK", style = MaterialTheme.typography.titleMedium)
+                TextButton(onClick = onShare) { Text("Share") }
+            }
+            Text("\"$label\"", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "$moved block(s) moved. Put that setting BACK to its first value, then tap Scan for change again. Only the block that returns too counts — the rest is running-engine state.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun NoConfirmCard(
+    label: String,
+    movedOnce: Int,
+    unconfirmed: List<BlockChange>,
+    onShare: () -> Unit,
+    onRetry: () -> Unit,
+) {
+    var showDetails by remember { mutableStateOf(false) }
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("NO CONFIRMED MOVER", style = MaterialTheme.typography.titleMedium)
+                TextButton(onClick = onShare) { Text("Share") }
+            }
+            Text("\"$label\"", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "$movedOnce block(s) moved once but none followed you back — nothing saved. That setting may live in the radio itself, or doors/HVAC moved mid-scan. Baseline is still banked.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (unconfirmed.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                TextButton(onClick = { showDetails = !showDetails }) {
+                    Text(if (showDetails) "Hide details" else "Details (${unconfirmed.size} one-time mover${if (unconfirmed.size == 1) "" else "s"})")
+                }
+                if (showDetails) {
+                    Text(
+                        unconfirmed.joinToString(", ") { it.displayLid + " " + it.ecuLabel },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = onRetry) { Text("Try again") }
         }
     }
 }

@@ -47,3 +47,17 @@ Decisions:
   handoffs never block. Baseline still rolls forward every scan.
 - Saving writes records for the shown answer only, stamped with the Step 3
   label and the truck profile.
+
+## 2026-11-18 — There-and-back confirm
+
+Why: with the engine running the body ECUs never sit still, so one before/after
+read always shows a dozen movers and the learned noise mask never catches up.
+
+Decisions:
+- Scan for change is three taps: baseline (A), changed (B, held not banked),
+  reverted (C). `confirmToggle(A,B,C)` keeps only blocks where the same byte
+  moved A->B and returned to the exact baseline byte B->C.
+- Save is gated on a confirmed block; one-time movers and idle noise sit
+  behind a Details expander, never in the headline answer.
+- Mid-flight state (B) lives in memory only; banking still happens on C so
+  the next setting chains. Handoff return resets the toggle.

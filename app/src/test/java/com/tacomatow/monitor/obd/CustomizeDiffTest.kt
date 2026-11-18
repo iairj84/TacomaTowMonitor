@@ -224,6 +224,34 @@ class CustomizeDiffTest {
     }
 
     @Test
+    fun `there-and-back keeps only the block that reverts`() {
+        val a = listOf(
+            reading("750", "Main body ECU", 0x14, "65"),
+            reading("7C0", "Combination meter", 0x23, "7A"),
+        )
+        val b = listOf(
+            reading("750", "Main body ECU", 0x14, "25"),
+            reading("7C0", "Combination meter", 0x23, "95"),
+        )
+        val c = listOf(
+            reading("750", "Main body ECU", 0x14, "65"),
+            reading("7C0", "Combination meter", 0x23, "84"),
+        )
+        val check = confirmToggle(a, b, c)
+        assertEquals(1, check.confirmed.size)
+        assertEquals(0x14, check.confirmed.single().lid)
+        assertEquals(listOf(0x23), check.unconfirmed.map { it.lid })
+    }
+
+    @Test
+    fun `there-and-back with no revert confirms nothing`() {
+        val a = listOf(reading("750", "Main body ECU", 0x14, "65"))
+        val b = listOf(reading("750", "Main body ECU", 0x14, "25"))
+        val c = listOf(reading("750", "Main body ECU", 0x14, "26"))
+        assertTrue(confirmToggle(a, b, c).confirmed.isEmpty())
+    }
+
+    @Test
     fun `survey lists header lid length and payload`() {
         val text = CustomizeExplorer.describeSurvey(
             listOf(

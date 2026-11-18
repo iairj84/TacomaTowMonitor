@@ -396,6 +396,86 @@ data class SnapshotDiff(
     val topCandidate: BlockChange? get() = rankedChanges.firstOrNull()
 }
 
+/** A block that tracked a setting there and back: baseline -> changed -> reverted. */
+data class ToggleMatch(
+    val header: String,
+    val ecuLabel: String,
+    val lid: Int,
+    val baseHex: String,
+    val changedHex: String,
+    val revertedHex: String,
+    val byteChanges: List<ByteChange>,
+) {
+    val displayLid: String get() = "0x%02X".format(lid)
+    val changedBitCount: Int get() = byteChanges.sumOf { it.changedBits.size }
+    val isSingleBit: Boolean get() = byteChanges.size == 1 && changedBitCount == 1
+    fun toBlockChange(): BlockChange = BlockChange(header, ecuLabel, lid, baseHex, changedHex, byteChanges)
+}
+
+/** There-and-back check across three scans: only the block that followed the
+ * setting both ways counts. Live truck-state movers almost never revert the
+ * same byte to the exact baseline value, so they fall out here even when the
+ * running engine keeps inventing new drift. */
+data class ToggleCheck(
+    val confirmed: List<ToggleMatch>,
+    val diffAB: SnapshotDiff,
+    val diffBC: SnapshotDiff,
+) {
+    val identical: Boolean get() = confirmed.isEmpty()
+    val rankedConfirmed: List<ToggleMatch> get() = confirmed.sortedWith(
+        compareBy<ToggleMatch>({ !it.isSingleBit }, { it.changedBitCount }, { it.byteChanges.size }, { it.header }, { it.lid }),
+    )
+    val topConfirmed: ToggleMatch? get() = rankedConfirmed.firstOrNull()
+    /** Everything that moved once but did not track the toggle: hidden behind details. */
+    val unconfirmed: List<BlockChange>
+        get() {
+            val keys = confirmed.map { it.header to it.lid }.toSet()
+            return (diffAB.changes + diffBC.changes)
+                .filterNot { (it.header to it.lid) in keys }
+                .distinctBy { it.header to it.lid }
+        }
+}
+
+fun confirmToggle(
+    baseline: List<LidReading>,
+    changed: List<LidReading>,
+    reverted: List<LidReading>,
+    probedKeys: Set<Pair<String, Int>>? = null,
+    noiseMasks: NoiseMasks = emptyMap(),
+): ToggleCheck {
+    val diffAB = CustomizeExplorer.diff(baseline, changed, probedKeys, noiseMasks)
+    val diffBC = CustomizeExplorer.diff(changed, reverted, probedKeys, noiseMasks)
+    fun tokensOf(hex: String): List<String> =
+        hex.trim().split(' ').filter { it.isNotEmpty() }
+    val bcByKey = diffBC.changes.associateBy { it.header to it.lid }
+    val confirmed = mutableListOf<ToggleMatch>()
+    for (ab in diffAB.changes) {
+        val bc = bcByKey[ab.header to ab.lid] ?: continue
+        val baseTokens = tokensOf(ab.beforeHex)
+        val revertedTokens = tokensOf(bc.afterHex)
+        if (baseTokens.isEmpty() || revertedTokens.isEmpty()) continue
+        val followed = ab.byteChanges.filter { b ->
+            val base = baseTokens.getOrNull(b.index)
+            val reverted = revertedTokens.getOrNull(b.index)
+            val bcMove = bc.byteChanges.firstOrNull { it.index == b.index } ?: return@filter false
+            // Continuity both legs plus exact return to the baseline byte.
+            bcMove.before == b.after && base != null && base.equals(reverted, ignoreCase = true)
+        }
+        if (followed.isNotEmpty()) {
+            confirmed += ToggleMatch(
+                header = ab.header,
+                ecuLabel = ab.ecuLabel,
+                lid = ab.lid,
+                baseHex = ab.beforeHex,
+                changedHex = ab.afterHex,
+                revertedHex = bc.afterHex,
+                byteChanges = followed,
+            )
+        }
+    }
+    return ToggleCheck(confirmed, diffAB, diffBC)
+}
+
 data class LidReading(
     val header: String,
     val ecuLabel: String,

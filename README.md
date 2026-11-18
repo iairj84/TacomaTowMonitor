@@ -263,8 +263,7 @@ the same bug gets fixed twice.
 scans the C-BEST blocks (full scan once, re-scan after that). Step 2 learns
 noise once: three scans with nothing changing, so bits that move on their own
 are ignored from then on. Step 3 maps a setting: type what you are changing,
-tap Scan for change to save the baseline, change that ONE setting on the factory radio, then tap Scan for
-change again — that scan becomes the baseline for the next one, so you chain change, scan, repeat. The app ranks the movers and names the most likely one (one bit = one option; multi-bit moves are truck state) in an answer card — tap Save, or Not this to try the next candidate. Changes are saved as records
+tap Scan for change to save the baseline (1/3), change that ONE setting on the factory radio (engine RUNNING, parked), Scan again (2/3), put it BACK, Scan a third time (3/3) — only the block that follows you there and back counts. That scan becomes the baseline for the next one, so you chain change, scan, repeat. The app names the confirmed mover in an answer card — tap Save, or Not this to try the next confirmed block. One-time movers stay hidden behind Details. Changes are saved as records
 stamped with the truck in Settings (year/trim/calibration — set it there, not
 on this screen) and exported as JSON. The name comes from your truck and your
 note — the app learns the bytes from the diff, never from a list.
