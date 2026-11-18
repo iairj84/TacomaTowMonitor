@@ -73,3 +73,30 @@ Decisions:
   but minutes. Dropouts are re-asked rather than assumed, and `carryForward`
   pins unasked blocks to their scan-2 values so they cannot false-confirm.
   The narrowed re-read is never banked — the baseline stays the full sweep.
+
+## 2026-11-18 — First full mapping pass (12 settings, 2019 TRD Off-Road cal 896)
+
+Why: the owner mapped almost every radio-configurable setting in ~15 minutes
+with the there-and-back flow (change one setting, confirm, revert). This is
+what the data says about a future write path — no code changed, read-only
+still holds.
+
+Observed (13 entries, 1 exact duplicate 66->65 + one `::` typo = 12 unique):
+- 750/0x40 LID 0x14 byte 1 holds TWO settings: relock timer (66->65 bits 0-1,
+  66->64 bit 1, 66->60 bits 1-2) and two-press unlock (66->26 bit 6). A write
+  to the timer must preserve bit 6 and vice versa — bit-level, not byte-level.
+- 750/0x40 LID 0x11 byte 1 holds lock AND unlock as one enum (06->0A/02 lock,
+  06->05/04 unlock, XORs 0xC/0x4/0x3/0x2 from the same base). Only 4 combos
+  from base 06 are known; the full matrix (e.g. by-speed + by-driver-door)
+  is unmapped. This LID is the most dangerous to write today.
+- Same LID, two bytes: 0x14 byte 0 is feedback lights (9A->92 bit 3) while
+  byte 1 is relock/two-press above. `3B` rewrites the whole block, so a
+  byte write must carry the other byte's current value — stale-copy risk.
+- Singles: 750/0x40 0x15 byte 3 headlamp timer 40->80 (bits 6-7), 7C4 0x81
+  byte 0 auto-AC 00->40 (bit 6), 750/0x40 0xAB byte 0 doors-to-unlock 06->05.
+- Policy gap by design: `WritePolicy.ALLOWED_LIDS` is 0x01..0x3F, so 0xAB
+  (171) and 0x81 (129) are currently refused. Widening needs each block
+  proven as stored settings (no idle drift) first — not a range bump.
+- Missing for any write: full block payloads (to prove single-frame 3B,
+  payload <= 5 bytes) and the 0x11 full matrix. Next step is still the
+  owner's pick: design doc vs `3B` transmit+NRC spike, same-value write first.

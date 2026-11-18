@@ -1,5 +1,7 @@
 # Changelog
 
+- 2026-11-18: Notes record the first full mapping pass (12 settings, 2019 TRD Off-Road cal 896): shared bytes in 750/0x40 0x14 and 0x11, whole-block rewrite risk, and the 0xAB/0x81 allowlist gap. No code change; reads only.
+
 - 2026-11-18: Scan 3 of there-and-back re-reads only the scan-2 movers plus scan-2 dropouts instead of all 100+ blocks; unasked blocks ride scan 2 forward so they can neither confirm nor false-confirm, and the banked baseline is never shrunk by the narrowed re-read.
 
 - 2026-11-18: Shared there-and-back report shows only the confirmed block with all three payloads, then one compressed line each for one-time movers and drift; baseline timestamp on the card no longer reads 1970 for a restored snapshot.
