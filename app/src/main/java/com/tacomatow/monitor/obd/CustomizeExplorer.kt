@@ -484,6 +484,35 @@ fun confirmToggle(
  * blocks first with all three payloads, then one compressed line each for
  * what moved once and what is known drift.
  */
+/**
+ * What scan 3 needs to re-ask: the scan-2 movers (the only blocks that can
+ * confirm) plus blocks that answered in the baseline but dropped in scan 2
+ * (re-ask, don't assume). Everything else rides scan 2 forward via
+ * [carryForward], so it can neither confirm nor false-confirm.
+ */
+fun narrowConfirmPlan(
+    baseline: List<LidReading>,
+    changed: List<LidReading>,
+    diffAB: SnapshotDiff?,
+): Map<String, Set<Int>> {
+    val moved = diffAB?.changes?.map { it.header to it.lid }?.toSet() ?: emptySet()
+    val changedOk = changed.filter { it.supported }.map { it.header to it.lid }.toSet()
+    val dropped = baseline.filter { it.supported }.map { it.header to it.lid }.toSet() - changedOk
+    return (moved + dropped)
+        .groupBy({ it.first }, { it.second })
+        .mapValues { (_, lids) -> lids.toSet() }
+}
+
+/**
+ * Overlay a narrowed re-read onto the full scan-2 sweep: re-asked blocks
+ * take their fresh values, everything else keeps scan 2. Unasked blocks
+ * then show no B->C move and cannot confirm.
+ */
+fun carryForward(changed: List<LidReading>, reread: List<LidReading>): List<LidReading> {
+    val byKey = reread.associateBy { it.header to it.lid }
+    return changed.map { b -> byKey[b.header to b.lid] ?: b }
+}
+
 fun describeToggle(
     check: ToggleCheck,
     label: String,

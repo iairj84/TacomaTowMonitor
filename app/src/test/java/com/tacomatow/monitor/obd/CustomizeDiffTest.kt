@@ -280,6 +280,46 @@ class CustomizeDiffTest {
     }
 
     @Test
+    fun `narrow plan re-asks movers plus dropouts only`() {
+        val a = listOf(
+            reading("750", "Main body ECU", 0x14, "9A 66 20"),
+            reading("7C0", "Combination meter", 0x13, "8C"),
+            reading("7C0", "Combination meter", 0x23, "B4"),
+        )
+        val b = listOf(
+            reading("750", "Main body ECU", 0x14, "9A 65 20"),
+            reading("7C0", "Combination meter", 0x13, "8B"),
+            LidReading("7C0", "Combination meter", 0x23, raw = "NO DATA", payloadHex = null),
+        )
+        val ab = CustomizeExplorer.diff(a, b)
+        val plan = narrowConfirmPlan(a, b, ab)
+        // 0x14 and 0x13 moved; 0x23 dropped in scan 2 so it is re-asked,
+        // not assumed. The other ~100 quiet blocks are never re-asked.
+        assertEquals(
+            mapOf("750" to setOf(0x14), "7C0" to setOf(0x13, 0x23)),
+            plan,
+        )
+    }
+
+    @Test
+    fun `narrowed re-read still confirms the toggle`() {
+        val a = listOf(
+            reading("750", "Main body ECU", 0x14, "9A 66 20"),
+            reading("7C0", "Combination meter", 0x13, "8C"),
+        )
+        val b = listOf(
+            reading("750", "Main body ECU", 0x14, "9A 65 20"),
+            reading("7C0", "Combination meter", 0x13, "8B"),
+        )
+        // Scan 3 re-read only 0x14; 0x13 rides scan 2 forward and cannot confirm.
+        val cNarrow = listOf(reading("750", "Main body ECU", 0x14, "9A 66 20"))
+        val check = confirmToggle(a, b, carryForward(b, cNarrow))
+        assertEquals(1, check.confirmed.size)
+        assertEquals(0x14, check.confirmed.single().lid)
+        assertEquals(listOf(0x13), check.unconfirmed.map { it.lid })
+    }
+
+    @Test
     fun `survey lists header lid length and payload`() {
         val text = CustomizeExplorer.describeSurvey(
             listOf(

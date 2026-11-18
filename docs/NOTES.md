@@ -68,3 +68,8 @@ Decisions:
 - First real truck run (2019 TRD, engine running): auto relock 120 -> 60 =
   0x14 @ 750/0x40 byte 1, 66 -> 65 (bits 0-1), returning to 9A 66 20. 22
   other blocks moved once; none returned.
+- Scan 3 narrows to `narrowConfirmPlan` (movers + dropouts): only a block
+  that moved A->B can confirm, so re-asking the ~90 quiet blocks buys nothing
+  but minutes. Dropouts are re-asked rather than assumed, and `carryForward`
+  pins unasked blocks to their scan-2 values so they cannot false-confirm.
+  The narrowed re-read is never banked — the baseline stays the full sweep.

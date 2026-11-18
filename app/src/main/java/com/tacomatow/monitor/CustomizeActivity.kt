@@ -310,6 +310,30 @@ private fun CustomizeScreen(onBack: () -> Unit) {
         }
     }
 
+    /**
+     * Scan 3 of there-and-back: re-ask only [narrow] (scan-2 movers plus
+     * scan-2 dropouts). Leaves `results`, `knownBlocks` and the banked
+     * baseline alone — a narrowed re-read must never shrink what a full
+     * sweep taught.
+     */
+    fun runNarrowConfirm(narrow: Map<String, Set<Int>>, then: (List<LidReading>) -> Unit) {
+        if (scanning) return
+        message = null
+        done = 0
+        total = narrow.values.sumOf { it.size }
+        scanning = true
+        scope.launch {
+            val found = ObdHolder.repository.sweepCustomize(
+                known = narrow,
+            ) { d, t ->
+                done = d
+                total = t
+            }
+            scanning = false
+            then(found)
+        }
+    }
+
     // Recompute whenever the sweep result set or the saved snapshot changes.
     val current = results.toList()
     // A fast re-scan never asked about the omitted probes, so their absence
@@ -716,7 +740,7 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                                         message = if (d.identical) {
                                             "Nothing moved yet — change that ONE setting on the radio, then scan again."
                                         } else {
-                                            "${d.changes.size} block(s) moved (2/3) — now put that setting BACK to \"${valueFrom.ifBlank { "its first value" }}\" and tap Scan for change again. Only the block that follows you back counts."
+                                            "${d.changes.size} block(s) moved (2/3) — now put that setting BACK to \"${valueFrom.ifBlank { "its first value" }}\" and tap Scan for change again. Only the block that follows you back counts, so the confirm re-reads just those ${d.changes.size} — the quick one."
                                         }
                                     }
                                 } else {
@@ -725,9 +749,24 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                                     val oldLabel = composedLabel()
                                     val keys = knownBlocks.entries
                                         .flatMap { (header, lids) -> lids.map { header to it } }.toSet()
-                                    runScan(true) { found ->
-                                        if (found.none { it.supported }) return@runScan
-                                        val check = com.tacomatow.monitor.obd.confirmToggle(old.readings, mid, found, keys, noiseBlocks)
+                                    // Scan 3 re-asks only what can matter: the scan-2 movers
+                                    // plus any scan-2 dropouts. The rest ride scan 2 forward,
+                                    // so they can neither confirm nor false-confirm.
+                                    val narrow = com.tacomatow.monitor.obd.narrowConfirmPlan(old.readings, mid, changeDiff)
+                                    val hadMovers = changeDiff?.changes?.isNotEmpty() == true
+                                    if (narrow.isEmpty()) {
+                                        midReadings = null
+                                        changeDiff = null; answerIndex = 0
+                                        message = "Scan 2 matched the baseline — change that ONE setting on the radio, then Scan for change again."
+                                        return@OutlinedButton
+                                    }
+                                    runNarrowConfirm(narrow) { found ->
+                                        if (found.none { it.supported }) {
+                                            message = "Confirm re-read got nothing back — dongle may have dropped. Tap Scan for change to retry it."
+                                            return@runNarrowConfirm
+                                        }
+                                        val revertedFull = com.tacomatow.monitor.obd.carryForward(mid, found)
+                                        val check = com.tacomatow.monitor.obd.confirmToggle(old.readings, mid, revertedFull, keys, noiseBlocks)
                                         val now = System.currentTimeMillis()
                                         toggleCheck = check
                                         changeDiff = check.diffAB
@@ -735,19 +774,17 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                                         changeLabel = oldLabel
                                         changeBaselineAt = old.at
                                         changeCurrentAt = now
-                                        val banked = CustomizeSnapshotStore.Snapshot(
-                                            at = now,
-                                            readings = found,
-                                            label = oldLabel,
-                                        )
-                                        snapshot = banked
-                                        CustomizeSnapshotStore.save(context, banked)
+                                        // The baseline stays banked: with the setting put back the
+                                        // truck is where it started, and a narrowed re-read must
+                                        // never shrink the baseline to just the movers.
                                         midReadings = null
                                         message = if (check.confirmed.isNotEmpty()) {
                                             val top = check.topConfirmed!!
                                             "Confirmed (3/3): ${top.displayLid} ${top.ecuLabel} followed you there and back — tap Save below, or Not this for the next confirmed block."
+                                        } else if (!hadMovers) {
+                                            "Still nothing moved — that setting may live in the radio itself. Baseline still banked."
                                         } else {
-                                            "Nothing followed you both ways — that setting may live in the radio itself, or truck state drowned it. Try again without opening doors or touching HVAC."
+                                            "Nothing followed you back — scan 2 looks like a bad read (truck state moved mid-scan). Baseline still banked: change the setting and scan again."
                                         }
                                     }
                                 }
@@ -775,7 +812,7 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                     Text(
                         if (saved == null) {
                             "To map a setting (engine RUNNING, parked): name it, Scan (1/3 baseline), change that ONE setting " +
-                                "on the factory radio, Scan (2/3), put it BACK, Scan (3/3). Only the block that follows both ways counts."
+                                "on the factory radio, Scan (2/3), put it BACK, Scan (3/3). Only the block that follows both ways counts — the last scan re-reads only the movers, so it's the quick one."
                         } else if (midReadings != null && toggleCheck == null) {
                             "Waiting on the put-back scan — change \"${saved.label.ifBlank { "that setting" }}\" back to its first value, then Scan again."
                         } else {
