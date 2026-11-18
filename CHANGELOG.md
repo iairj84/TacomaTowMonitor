@@ -1,5 +1,7 @@
 # Changelog
 
+- 2026-11-18: Vehicle-matched writable list with full safeguards, starting with the safest single-bit setting (750/0x40 0x14 byte 0 bit 3 feedback lights): same-patch matching, observed-values-only, 0x11 lock/unlock held with its matrix reason, single-frame 3B with 7B/7F-3B-NRC parsing, engine-off reread + RPM/speed/volts checks, backup-first, cooldown, audit log, typed-LID + ack. 192 tests.
+
 - 2026-11-18: Guarded write-path design doc from the 12-setting mapping (shared-byte and allowlist risks, missing proofs, phase order). No write code; reads only.
 
 - 2026-11-18: Notes record the first full mapping pass (12 settings, 2019 TRD Off-Road cal 896): shared bytes in 750/0x40 0x14 and 0x11, whole-block rewrite risk, and the 0xAB/0x81 allowlist gap. No code change; reads only.

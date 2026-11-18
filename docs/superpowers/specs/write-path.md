@@ -1,6 +1,6 @@
 # Guarded write-path design — from the 12-setting mapping (no write code)
 
-Status: design only. The app remains read-only. `WRITE-SAFETY.md` + `WritePolicy` still govern; nothing here authorizes a write.
+Status: phase 1 implemented (v0.9.31). `WritableCatalog` (vehicle-matched, single-bit, allowlisted, 0x11 held) + `Elm327Client.writeGatewayLid` (single-frame, 7B/7F-3B-NRC parsed) + `ObdRepository.writeKnownByte` (engine-off reread, RPM/speed/volts live checks, backup-first, cooldown, audit) + one in-app sender (safest setting only: 750/0x40 0x14 byte 0 bit 3). `WRITE-SAFETY.md` + `WritePolicy` still govern; nothing here authorizes a second setting.
 
 ## 1. Source mapping (owner-observed, 2019 TRD Off-Road, cal 896)
 

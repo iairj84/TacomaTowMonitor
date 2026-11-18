@@ -101,4 +101,9 @@ Observed (13 entries, 1 exact duplicate 66->65 + one `::` typo = 12 unique):
   payload <= 5 bytes) and the 0x11 full matrix. Owner picked the design doc:
   `docs/superpowers/specs/write-path.md` now spells out the shared-byte
   risks (0x14 bit-level, 0x11 full-matrix hold), the 0xAB/0x81 allowlist
-  refusals, and the phase order. No write code.
+  refusals, and the phase order. Owner picked option A; v0.9.31 implements
+  phase 1: vehicle-matched writable list, observed-values-only, 0x11 held
+  with its matrix reason shown in-app, single-frame 3B (7B vs 7F 3B NRC),
+  engine-off reread with live RPM/speed/volts checks, backup-first,
+  cooldown, audit log, typed-LID + ack — starting with the safest
+  single-bit setting (750/0x40 0x14 byte 0 bit 3).

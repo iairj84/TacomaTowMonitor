@@ -27,6 +27,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -68,6 +69,9 @@ import com.tacomatow.monitor.obd.CustomizeRecordStore
 import com.tacomatow.monitor.obd.CustomizeSnapshotStore
 import com.tacomatow.monitor.obd.LidReading
 import com.tacomatow.monitor.obd.ObdHolder
+import com.tacomatow.monitor.obd.write.WritableCatalog
+import com.tacomatow.monitor.obd.write.WriteAuditLog
+import com.tacomatow.monitor.obd.write.WriteOutcome
 import com.tacomatow.monitor.obd.SnapshotDiff
 import com.tacomatow.monitor.obd.VehicleProfileStore
 import com.tacomatow.monitor.ui.TacomaTheme
@@ -143,6 +147,13 @@ private fun CustomizeScreen(onBack: () -> Unit) {
     var changeBaselineAt by remember { mutableStateOf(0L) }
     var changeCurrentAt by remember { mutableStateOf(0L) }
     var savedAnswerKey by remember { mutableStateOf<Pair<String, Int>?>(null) }
+    // Guarded write flow (phase 1): which candidate is being written, the
+    // chosen value, the typed-LID confirmation, and the session ack.
+    var writeKey by remember { mutableStateOf<String?>(null) }
+    var writeChoice by remember { mutableStateOf("") }
+    var writeTypedLid by remember { mutableStateOf("") }
+    var writeAck by remember { mutableStateOf(false) }
+    var writeBusy by remember { mutableStateOf(false) }
     val records = remember {
         mutableStateListOf<ChangeRecord>().apply { addAll(CustomizeRecordStore.load(context)) }
     }
@@ -995,6 +1006,58 @@ private fun CustomizeScreen(onBack: () -> Unit) {
                 }
             }
 
+            // Vehicle-matched writable list: same patch or nothing.
+            run {
+                val (writable, held) = WritableCatalog.split(records.toList(), currentProfile, noiseBlocks)
+                item {
+                    WritableCard(
+                        writable = writable,
+                        held = held,
+                        profileSummary = currentProfile.summary(),
+                        connected = state.connected && !writeBusy,
+                        writeKey = writeKey,
+                        writeChoice = writeChoice,
+                        writeTypedLid = writeTypedLid,
+                        writeAck = writeAck,
+                        onPick = { key, first -> writeKey = key; writeChoice = first; writeTypedLid = ""; writeAck = false },
+                        onChoice = { writeChoice = it },
+                        onTyped = { writeTypedLid = it },
+                        onAck = { writeAck = it },
+                        onCancel = { writeKey = null },
+                        onAudit = {
+                            share("Tacoma write audit", WriteAuditLog.export(context))
+                        },
+                        onSend = { candidate ->
+                            if (writeBusy) return@WritableCard
+                            writeBusy = true
+                            message = null
+                            scope.launch {
+                                val outcome: WriteOutcome = try {
+                                    ObdHolder.repository.writeKnownByte(
+                                        context, candidate.record, writeChoice, currentProfile, noiseBlocks,
+                                    )
+                                } catch (e: Exception) {
+                                    WriteOutcome.AdapterError("Write failed before sending: ${e.message}")
+                                }
+                                writeBusy = false
+                                message = when (outcome) {
+                                    is WriteOutcome.SentOk -> {
+                                        writeKey = null
+                                        "Wrote ${candidate.record.displayLid} byte ${candidate.record.byteIndex}: " +
+                                            "truck now reads ${outcome.verifiedHex}. Re-check the function on the truck."
+                                    }
+                                    is WriteOutcome.SentUnverified -> outcome.detail + " Audit kept."
+                                    is WriteOutcome.ModuleRefused -> "Module refused the write (7F 3B ${outcome.nrc}). " +
+                                        "Nothing retried — re-read the block. Audit kept."
+                                    is WriteOutcome.Refused -> "${outcome.message} ${outcome.detail} Nothing was sent."
+                                    is WriteOutcome.AdapterError -> outcome.message
+                                }
+                            }
+                        },
+                    )
+                }
+            }
+
             if (scanning && total > 0) {
                 item {
                     LinearProgressIndicator(
@@ -1047,6 +1110,154 @@ private fun CustomizeScreen(onBack: () -> Unit) {
             }
 
             item { Spacer(Modifier.height(20.dp).navigationBarsPadding()) }
+        }
+    }
+}
+
+@Composable
+private fun WritableCard(
+    writable: List<WritableCatalog.Candidate>,
+    held: List<WritableCatalog.Held>,
+    profileSummary: String,
+    connected: Boolean,
+    writeKey: String?,
+    writeChoice: String,
+    writeTypedLid: String,
+    writeAck: Boolean,
+    onPick: (String, String) -> Unit,
+    onChoice: (String) -> Unit,
+    onTyped: (String) -> Unit,
+    onAck: (Boolean) -> Unit,
+    onCancel: () -> Unit,
+    onAudit: () -> Unit,
+    onSend: (WritableCatalog.Candidate) -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(12.dp)) {
+            Text("WRITABLE ON THIS TRUCK (${writable.size})", style = MaterialTheme.typography.labelMedium)
+            Text(
+                "Same vehicle patch or nothing ($profileSummary). Only values your own mapping observed. " +
+                    "Phase 1: the safest single-bit setting sends; the rest list first. Engine OFF, ignition on, parked.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (writable.isEmpty()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Nothing writable here yet — import your mapping on the truck it came from, with a full vehicle stamp.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            writable.forEach { candidate ->
+                val record = candidate.record
+                val key = "${record.header}/${record.lid}/${record.byteIndex}"
+                val safest = WritableCatalog.isSafest(record)
+                Spacer(Modifier.height(8.dp))
+                Text(record.label, style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "${record.displayLid} · ${record.ecuLabel} — byte ${record.byteIndex} (bit ${record.changedBits.firstOrNull() ?: "?"})",
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    "Observed values: ${candidate.allowedValues.joinToString(", ")} · now ${record.before}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (!safest) {
+                    Text(
+                        "Listed first — sends after the safest setting proves the path.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else if (writeKey != key) {
+                    Spacer(Modifier.height(4.dp))
+                    Button(
+                        onClick = {
+                            val first = candidate.allowedValues.firstOrNull { it != record.before.uppercase() }
+                                ?: candidate.allowedValues.firstOrNull().orEmpty()
+                            onPick(key, first)
+                        },
+                        enabled = connected,
+                    ) { Text("Write…") }
+                }
+                if (safest && writeKey == key) {
+                    Spacer(Modifier.height(4.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        candidate.allowedValues.forEach { value ->
+                            val selected = writeChoice.equals(value, ignoreCase = true)
+                            OutlinedButton(
+                                onClick = { onChoice(value) },
+                                enabled = connected,
+                                border = if (selected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
+                            ) { Text(value) }
+                            Spacer(Modifier.size(8.dp))
+                        }
+                    }
+                    Text(
+                        "Changing ${record.label} from ${record.before.uppercase()} to ${writeChoice.uppercase()} " +
+                            "in block ${record.displayLid}, byte ${record.byteIndex}. Original is stored; restore passes the same gate. " +
+                            "Engine OFF, parked, battery ≥ 12.0 V — the app re-checks all three on the bus before sending.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    OutlinedTextField(
+                        value = writeTypedLid,
+                        onValueChange = onTyped,
+                        label = { Text("Type ${record.displayLid} to confirm") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = writeAck, onCheckedChange = onAck)
+                        Text(
+                            "I accept this changes my truck's body computer and may need a dealer to recover.",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    val lidOk = writeTypedLid.trim().removePrefix("0x").removePrefix("0X")
+                        .equals("%02X".format(record.lid), ignoreCase = true)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Button(
+                            onClick = { onSend(candidate) },
+                            enabled = connected && lidOk && writeAck && writeChoice.isNotBlank(),
+                        ) { Text("Confirm + send once") }
+                        Spacer(Modifier.size(8.dp))
+                        TextButton(onClick = onCancel) { Text("Cancel") }
+                    }
+                }
+            }
+            if (held.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "HELD BACK (${held.size}) — why",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                held.take(8).forEach { h ->
+                    Text(
+                        "${h.record.displayLid} ${h.record.label} — ${h.reason}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (held.size > 8) {
+                    Text(
+                        "+${held.size - 8} more held — same rules.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            TextButton(onClick = onAudit) { Text("Share write audit") }
         }
     }
 }

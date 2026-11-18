@@ -546,6 +546,48 @@ class Elm327Client(
         }
     }
 
+    /** Result of a single-frame customization write (3B), parsed — never raw text. */
+    sealed interface GatewayWrite {
+        data object Ok : GatewayWrite
+        data class Refused(val nrc: String) : GatewayWrite
+        data object NoResponse : GatewayWrite
+        data object TooLarge : GatewayWrite
+    }
+
+    /**
+     * One whole-block rewrite through the gateway: `3B <LID> <data>`.
+     * Single-frame only (`data.size <= 5`): the ELM327 does not auto-segment
+     * transmits, so anything larger is refused client-side, never sent.
+     * Positive answer is `7B <LID>`; negative is `7F 3B <NRC>`, with 0x78
+     * waited out once via [transactPending] like every other read here.
+     */
+    fun writeGatewayLid(sub: Int, lid: Int, data: ByteArray, timeoutMs: Int = 3_000): GatewayWrite {
+        if (!open) return GatewayWrite.NoResponse
+        if (data.isEmpty() || data.size > 5) return GatewayWrite.TooLarge
+        val framing = if (gatewaySub == (sub and 0xFF)) gatewayFraming else beginGateway(sub)
+        if (framing == GatewayFraming.NONE) return GatewayWrite.NoResponse
+        val payload = "3B%02X".format(lid and 0xFF) + data.joinToString("") { "%02X".format(it) }
+        // Manual framing carries sub-target + single-frame length by hand:
+        // "40 05 3B 14 …" — PCI 05 = 2 service bytes + 3 data bytes.
+        val cmd = if (framing == GatewayFraming.MANUAL) {
+            manualFrame("%02X%02X%s".format(sub and 0xFF, 2 + data.size, payload))
+        } else {
+            payload
+        }
+        val raw = transactPending(payload, timeoutMs, gatewaySub = sub and 0xFF) {
+            transport.transact(cmd, it)
+        } ?: return GatewayWrite.NoResponse
+        val msgs = IsoTp.messages(raw, sub and 0xFF)
+        if (msgs.any { m ->
+            m.size >= 2 && (m[0].toInt() and 0xFF) == 0x7B && (m[1].toInt() and 0xFF) == (lid and 0xFF)
+        }) return GatewayWrite.Ok
+        val neg = msgs.firstOrNull { m ->
+            m.size >= 3 && (m[0].toInt() and 0xFF) == 0x7F && (m[1].toInt() and 0xFF) == 0x3B
+        }
+        if (neg != null) return GatewayWrite.Refused("%02X".format(neg[2]))
+        return GatewayWrite.NoResponse
+    }
+
     /**
      * Under CAF0 nothing is formatted or padded — the bytes given are the
      * frame. Many ECUs ignore diagnostic frames short of 8 bytes, so hand

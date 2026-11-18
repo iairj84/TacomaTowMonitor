@@ -1,4 +1,4 @@
-# Tacoma Tow Monitor — 2019 Tacoma + ELM327 + Android Auto (read-only today)
+# Tacoma Tow Monitor — 2019 Tacoma + ELM327 + Android Auto
 
 Phone dashboard + trip logger for towing with your 2019 Tacoma V6 (A/T),
 built around the same Toyota-enhanced PIDs Torque Pro users rely on —
@@ -170,8 +170,9 @@ diagnostic connector using published standards: SAE J1979 for modes 01 and 09,
 and the ISO 15765 / ISO 14229 service families for the Toyota local-identifier
 reads (`21 <LID>`) used by the customize explorer. No protection measure is
 circumvented and no system the owner does not own is accessed. The current
-build never writes to the vehicle; the write path is specified in
-docs/WRITE-SAFETY.md, gated by `WritePolicy`, and not yet wired to any UI.
+build writes exactly one vehicle setting under guardrails; the rules are specified in
+docs/WRITE-SAFETY.md, gated by `WritePolicy`, with the phase plan in
+docs/superpowers/specs/write-path.md.
 
 **Where mappings come from.** A block is read, the owner changes one setting
 using whatever they already have (the factory radio's own customization menu, a
@@ -268,13 +269,7 @@ stamped with the truck in Settings (year/trim/calibration — set it there, not
 on this screen) and exported as JSON. The name comes from your truck and your
 note — the app learns the bytes from the diff, never from a list.
 
-**Customization writes: read-only today, specified for later.** `CustomizeActivity`
-reads C-BEST blocks and the current build never writes. That is a deliberate
-limit, not a gap waiting to be filled: a wrong write to a body ECU can leave a
-truck with dead locks, no chime and no documented undo. The rules a write path
-would have to satisfy are specified in docs/WRITE-SAFETY.md and enforced in
-code by `WritePolicy` (pure, tested); until a write UI is wired and reviewed,
-pull requests that add writes will be declined.
+**Customization writes: one guarded setting.** `CustomizeActivity` reads C-BEST blocks, and the "Writable on this truck" card offers exactly one send: the safest single-bit setting (lock/unlock feedback lights, 750/0x40 `0x14` byte 0 bit 3), only when the imported mapping matches the truck in Settings year/trim/calibration exactly, and only the observed values. Everything else lists first with its hold reason (notably `0x11` lock/unlock, one byte for two settings — held until its full matrix is mapped). Every send passes `WritePolicy`, re-reads the block with the engine off, stores the backup first, enforces typed-LID + ack, one write per confirm, 60 s cooldown, and an append-only audit log. The rules are specified in docs/WRITE-SAFETY.md, the phase plan in docs/superpowers/specs/write-path.md.
 
 **Ground rules:**
 
@@ -296,6 +291,6 @@ MIT — see [LICENSE](LICENSE). Do what you like with it, keep the notice.
 Bundled libraries are AndroidX/Compose and the Car App Library, all Apache-2.0.
 
 This project is not affiliated with Toyota, Elm Electronics or any adapter
-vendor. The current build reads standard and manufacturer diagnostic data and
-never writes vehicle configuration. Use at your own risk: no warranty, and no promise that a
+vendor. The current build reads standard and manufacturer diagnostic data and writes exactly one
+vehicle setting under the guardrails above. Use at your own risk: no warranty, and no promise that a
 PID decodes correctly on your truck.

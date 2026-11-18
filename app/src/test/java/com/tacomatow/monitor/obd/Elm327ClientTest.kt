@@ -110,7 +110,11 @@ class Elm327ClientTest {
     // Gateway framing: records what would go to the adapter. The adapter's
     // own length byte is the point — prefixing the sub-target by hand made the
     // frame leave as "04 40 02 21 14", which the gateway reads as sub-target 4.
-    private fun recordingClient(sent: MutableList<String>, ceaReply: String) =
+    private fun recordingClient(
+        sent: MutableList<String>,
+        ceaReply: String,
+        readReply: String? = null,
+    ) =
         Elm327Client(object : ElmTransport {
             override fun open(): Boolean = true
             override fun transact(cmd: String, timeoutMs: Int): String? {
@@ -119,6 +123,7 @@ class Elm327ClientTest {
                     cmd == "ATCEA40" -> ceaReply
                     cmd == "ATI" -> "ELM327 v1.5"
                     cmd.startsWith("AT") || cmd.isEmpty() -> "OK"
+                    cmd.startsWith("3B14") -> readReply
                     else -> null
                 }
             }
@@ -276,6 +281,37 @@ class Elm327ClientTest {
         c.connect()
         c.recoverBus(cold = true)
         assertTrue("AT Z not sent", sent.contains("ATZ"))
+    }
+
+    @Test
+    fun `a 7B echo is a write accept`() {
+        val sent = mutableListOf<String>()
+        val c = recordingClient(sent, ceaReply = "OK", readReply = "758 02 7B 14")
+        assertEquals(
+            Elm327Client.GatewayWrite.Ok,
+            c.writeGatewayLid(0x40, 0x14, byteArrayOf(0x9A.toByte(), 0x66, 0x20)),
+        )
+    }
+
+    @Test
+    fun `a 7F 3B answer reports its NRC`() {
+        val sent = mutableListOf<String>()
+        val c = recordingClient(sent, ceaReply = "OK", readReply = "758 03 7F 3B 33")
+        assertEquals(
+            Elm327Client.GatewayWrite.Refused("33"),
+            c.writeGatewayLid(0x40, 0x14, byteArrayOf(0x9A.toByte(), 0x66, 0x20)),
+        )
+    }
+
+    @Test
+    fun `an oversize write never reaches the bus`() {
+        val sent = mutableListOf<String>()
+        val c = recordingClient(sent, ceaReply = "OK")
+        assertEquals(
+            Elm327Client.GatewayWrite.TooLarge,
+            c.writeGatewayLid(0x40, 0x14, ByteArray(6)),
+        )
+        assertFalse("oversize payload was sent", sent.any { it.contains("3B14") })
     }
 
     @Test
