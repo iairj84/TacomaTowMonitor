@@ -121,6 +121,15 @@ policy and outside this codebase.
   Classic: unpair/re-pair in system Bluetooth. BLE (`odbble`): don't pair — scan
   from inside the app; if the scan finds nothing, the dongle may still be
   connected to Torque or your radio, so force-close those first.
+- **The phone asks to pair with the dongle:** it should not. A BLE pick never
+  opens an SPP socket, and the classic transport skips an unpaired device, so
+  pairing only ever happens in Android's Bluetooth settings (PIN `0000`/`1234`).
+  That prompt came from the app trying classic on a BLE dongle.
+- **Connected but every gauge says No data:** the adapter answers AT, the truck
+  does not. On a dual-mode dongle one radio can carry ELM text and no CAN
+  traffic; the app now tries the other radio before settling, and accepts a
+  silent link only when the adapter reads engine-off volts (< 12.9 V). If it
+  still sits blank with the engine running, share the adapter log.
 - **Trans shows NO DATA but coolant works:** header/ECU mismatch. Confirm the
   dongle answers `AT SH 701` + `221627` in a terminal app; some 4-cyl / manual
   trucks never supported these PIDs.

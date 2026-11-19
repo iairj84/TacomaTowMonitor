@@ -1,5 +1,7 @@
 # Changelog
 
+- 2026-11-19: Fixed blank gauges plus pairing prompts on connect. The picker's BLE flag was being discarded, so a BLE pick opened an SPP socket first — that is what made Android ask to pair — and `connect()` accepted any session that answered AT, so a dual-mode dongle's classic bridge that carries no CAN traffic won and the BLE radio was never tried. A BLE pick now stays on BLE, the last working radio is tried first, an unbonded device is skipped instead of prompting, the secure-socket fallback is gone, and a session that never hears the truck hands over to the other radio (unless the adapter reads engine-off volts). The tow banner also stops claiming "All clear" over empty gauges.
+
 - 2026-11-18: Retired the write path — the app is read-only again (`3B` send deleted from client and repository, writable-list UI gone, entry buried in Diagnostics → Advanced). Settings changes are quicker in a dedicated customize app; the explorer stays for reference only.
 
 - 2026-11-18: Vehicle-matched writable list with full safeguards, starting with the safest single-bit setting (750/0x40 0x14 byte 0 bit 3 feedback lights): same-patch matching, observed-values-only, 0x11 lock/unlock held with its matrix reason, single-frame 3B with 7B/7F-3B-NRC parsing, engine-off reread + RPM/speed/volts checks, backup-first, cooldown, audit log, typed-LID + ack. 192 tests.

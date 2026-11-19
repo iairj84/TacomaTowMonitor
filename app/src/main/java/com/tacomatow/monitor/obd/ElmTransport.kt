@@ -91,23 +91,33 @@ class SppTransport(
     override fun open(): Boolean {
         close()
         log.clear()
+        // RFCOMM requires a bond. The secure socket is what makes Android put
+        // a pairing request on screen — on every launch and every auto-
+        // reconnect — so an unpaired device is skipped outright and the caller
+        // moves on to BLE, which never pairs. Pairing stays a deliberate act in
+        // Android settings, not something a monitor app starts by itself.
+        if (device.bondState != BluetoothDevice.BOND_BONDED) {
+            stage = "classic-unbonded"
+            note("classic: not paired with this phone — pair it in Android Bluetooth settings first")
+            return false
+        }
         return try {
             stage = "classic-connect"
             note("classic: opening RFCOMM to ${device.address}")
             adapter.cancelDiscovery()
-            // Insecure first: ELM327 clones need no authentication, and the
-            // secure socket makes Android pop a system pairing dialog on an
-            // unpaired dongle — a distraction on every auto-reconnect for a
-            // set-and-forget monitor. Secure stays as the fallback for the
-            // rare clone that refuses an unauthenticated channel.
+            // Insecure on a bonded dongle: ELM327 clones need no
+            // authentication, and this channel cannot raise a pairing prompt.
             val sock = try {
                 device.createInsecureRfcommSocketToServiceRecord(SPP_UUID).also {
                     it.connect()
                     note("classic: insecure socket up")
                 }
             } catch (_: Exception) {
-                note("classic: insecure refused, trying secure (may ask to pair)")
-                device.createRfcommSocketToServiceRecord(SPP_UUID).also { it.connect() }
+                note("classic: refused on the unauthenticated channel — pair it in Android settings")
+                null
+            } ?: run {
+                close()
+                return false
             }
             socket = sock
             input = sock.inputStream

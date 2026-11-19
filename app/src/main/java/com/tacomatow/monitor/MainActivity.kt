@@ -490,7 +490,7 @@ class MainActivity : ComponentActivity() {
 
         if (showPicker) {
             BluetoothPicker(
-                onPick = { device, _ ->
+                onPick = { device, ble ->
                     showPicker = false
                     val mgr = getSystemService(BluetoothManager::class.java)
                     val adapter: BluetoothAdapter? = mgr?.adapter
@@ -502,7 +502,7 @@ class MainActivity : ComponentActivity() {
                         connectMsg = if (ok) null else (why ?: "Connect failed")
                         if (ok) rememberDevice(device)
                     }
-                    ObdHolder.repository.connectAny(this@MainActivity, adapter, device, done)
+                    ObdHolder.repository.connectAny(this@MainActivity, adapter, device, ble, done)
                 },
                 onDismiss = { showPicker = false },
             )
@@ -846,12 +846,17 @@ class MainActivity : ComponentActivity() {
 
     private fun overallTowStatus(state: ObdUiState): Pair<String, String> {
         val all = state.readings.values.mapNotNull { it.status }
+        val live = state.readings.values.any { it.valueF != null }
         val headline = when {
             all.contains("CRIT") -> "Stop — cool down" to
                 "A temp is past its limit. Back off now, keep the engine running so the cooler keeps working."
             all.contains("WARN") -> "Ease off" to
                 "Temps are climbing into the caution band. Drop speed, hold the gear, watch the pan."
             state.demoMode -> "Demo pull" to "Simulated climb — no dongle attached."
+            // A link with no reading is not "all clear": this banner is what
+            // sat green over four blank gauges.
+            state.connected && !live -> "Waiting for the truck" to
+                "The adapter is connected but no temperature has come back yet — check the ignition is on."
             state.connected -> "All clear — keep pulling" to "Pan and converter are inside their working bands."
             else -> "Not connected" to "Connect with the ignition on, or preview with demo data."
         }
@@ -1062,7 +1067,7 @@ class MainActivity : ComponentActivity() {
         val dot = when {
             state.readings.values.any { it.status == "CRIT" } -> palette.crit
             state.readings.values.any { it.status == "WARN" } -> palette.warn
-            state.connected -> palette.ok
+            state.connected && state.readings.values.any { it.valueF != null } -> palette.ok
             else -> palette.idle
         }
         Row(

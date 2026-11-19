@@ -95,6 +95,18 @@ class Elm327Client(
     @Volatile private var transportOpened = false
     @Volatile private var identityOk = false
 
+    /**
+     * True once the *truck* answered, not just the adapter. An ELM327 that
+     * replies to AT commands while its CAN side is dead — or a dual-mode
+     * dongle whose classic bridge carries no vehicle traffic — looks connected
+     * and leaves every gauge blank. Callers use this to try the other radio
+     * instead of settling for that session.
+     */
+    @Volatile private var vehicleAnswered = false
+
+    /** True when at least one reply this session came from the vehicle. */
+    fun sawVehicleData(): Boolean = vehicleAnswered
+
     /** False means we never even got a byte pipe — very different from a silent dongle. */
     fun didOpenTransport(): Boolean = transportOpened
 
@@ -102,6 +114,9 @@ class Elm327Client(
         if (!transport.open()) return false
         transportOpened = true
         open = true
+        // A rebuilt session proves itself again; last session's proof is not
+        // evidence about this one.
+        vehicleAnswered = false
         var anyAnswer = false
 
         // Break out of whatever the dongle was last doing. Any character
@@ -154,6 +169,9 @@ class Elm327Client(
         if (!ident.isNullOrBlank()) anyAnswer = true
         val probe = transport.transact("0100", 4_000)
         if (!probe.isNullOrBlank()) anyAnswer = true
+        vehicleAnswered = probe != null && IsoTp.messages(probe).any { m ->
+            m.isNotEmpty() && (m[0].toInt() and 0xFF) == 0x41
+        }
 
         if (!anyAnswer) {
             open = false
@@ -223,7 +241,10 @@ class Elm327Client(
                 }
                 val bytes = parseResponse(cmd, raw)
                 val value = bytes?.let { TacomaPids.decode(def, it) }
-                if (value != null) return PidAttempt(value, false)
+                if (value != null) {
+                    vehicleAnswered = true
+                    return PidAttempt(value, false)
+                }
                 if (responsePending(raw, cmd)) {
                     // It asked for more time and the extended wait expired
                     // too: that is silence, not a refusal. Retrying the read

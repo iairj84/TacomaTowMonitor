@@ -240,24 +240,43 @@ class ObdRepository(
         context: android.content.Context,
         adapter: BluetoothAdapter,
         device: BluetoothDevice,
+        /**
+         * The driver tapped a row from the BLE scan, so this dongle is a GATT
+         * device: its own radio is tried first. SPP is only a fallback for a
+         * bonded dual-mode unit, never the opening move — an SPP attempt at an
+         * unpaired LE dongle is exactly what puts a pairing request on screen.
+         */
+        bleOnly: Boolean = false,
         onDone: (Boolean, String?) -> Unit = { _, _ -> },
     ) {
         appContext = context.applicationContext
         lastMac = device.address
+        val classic = "classic" to { SppTransport(adapter, device) as ElmTransport }
+        val ble = "ble" to {
+            BleTransport(
+                context.applicationContext,
+                device,
+                rememberedChannel(device.address),
+            ) as ElmTransport
+        }
+        // Whatever carried the last session goes first: a dual-mode dongle can
+        // answer on both radios and only one of them reaches the truck.
+        val preferBle = bleOnly || preferredKind(device.address) == "ble"
         beginSession(
             label = device.name ?: device.address,
-            transports = listOf(
-                "classic" to { SppTransport(adapter, device) as ElmTransport },
-                "ble" to {
-                    BleTransport(
-                        context.applicationContext,
-                        device,
-                        rememberedChannel(device.address),
-                    ) as ElmTransport
-                },
-            ),
+            transports = if (preferBle) listOf(ble, classic) else listOf(classic, ble),
             onDone = onDone,
         )
+    }
+
+    /** Which radio carried the last session with this adapter, if known. */
+    private fun preferredKind(mac: String): String? =
+        appContext?.getSharedPreferences("tacoma", android.content.Context.MODE_PRIVATE)
+            ?.getString("radio_$mac", null)
+
+    private fun savePreferredKind(mac: String, kind: String) {
+        appContext?.getSharedPreferences("tacoma", android.content.Context.MODE_PRIVATE)
+            ?.edit()?.putString("radio_$mac", kind)?.apply()
     }
 
     private fun beginSession(
@@ -291,6 +310,8 @@ class ObdRepository(
             var failed: Elm327Client? = null
             var winner: Elm327Client? = null
             var winnerKind = ""
+            // Radios that gave us a pipe but never a word from the truck.
+            val silent = mutableListOf<Pair<String, Elm327Client>>()
 
             for ((kind, make) in transports) {
                 // Wrapped unconditionally: recording is a flag on the sink, so
@@ -307,14 +328,60 @@ class ObdRepository(
                     false
                 }
                 trail += c.transcript()
-                if (ok) {
+                if (!ok) {
+                    c.close()
+                    failed = c
+                    trail += "$kind: not usable, trying next transport"
+                    continue
+                }
+                if (c.sawVehicleData()) {
                     winner = c
                     winnerKind = kind
                     break
                 }
+                // Engine off: silence from the bus is expected, not evidence
+                // that this radio is the wrong one. Accept the link and let
+                // the poll loop wait for the key — churning to the other radio
+                // here would cost half a minute at every key-off launch.
+                val volts = withContext(Dispatchers.IO) {
+                    try { c.readVoltage() } catch (_: Exception) { null }
+                }
+                if (volts != null && volts < BusWatchdog.ENGINE_OFF_MAX_V) {
+                    trail += "$kind: adapter reads %.1f V — engine off, waiting for the key".format(volts)
+                    winner = c
+                    winnerKind = kind
+                    break
+                }
+                // The adapter answered AT, so the link is real — nothing on the
+                // bus did. A dual-mode dongle can expose a classic bridge that
+                // carries ELM text and no CAN traffic, and taking that session
+                // parks four blank gauges on the dashboard forever. Give the
+                // other radio a turn first; the truck may simply be off, which
+                // is what the key-on retry loop is for.
+                trail += "$kind: adapter answers, nothing on the bus — trying the other radio"
+                silent += kind to c
                 c.close()
-                failed = c
-                trail += "$kind: not usable, trying next transport"
+            }
+
+            // No radio reached the truck: rebuild the likelier UART (a GATT
+            // link, whose classic sibling is the usual reason a pipe carries no
+            // vehicle data) and wait there for the ignition. A link that
+            // answers AT still beats no session at all.
+            if (winner == null && silent.isNotEmpty()) {
+                val (kind, c) = silent.firstOrNull { it.first == "ble" } ?: silent.first()
+                val reopened = try {
+                    withContext(Dispatchers.IO) { c.connect() }
+                } catch (_: Exception) {
+                    false
+                }
+                trail += c.transcript()
+                if (reopened) {
+                    winner = c
+                    winnerKind = kind
+                } else {
+                    c.close()
+                    failed = c
+                }
             }
 
             val won = winner
@@ -346,6 +413,7 @@ class ObdRepository(
             won.onLinkLost { scheduleReconnect() }
             identityOk = won.identityVerified()
             won.confirmedBleChannel()?.let { saveChannel(lastMac, it) }
+            savePreferredKind(lastMac, winnerKind)
             client = won
             _state.update {
                 it.copy(
